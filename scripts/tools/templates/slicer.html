@@ -1,0 +1,1059 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>瓦片切分工具</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a1a;
+            color: #fff;
+            padding: 20px;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: #2a2a2a;
+            border-radius: 8px;
+        }
+        .main-content {
+            display: flex;
+            gap: 20px;
+        }
+        .image-panel {
+            flex: 1;
+            background: #2a2a2a;
+            border-radius: 8px;
+            padding: 15px;
+        }
+        .control-panel {
+            width: 300px;
+            background: #2a2a2a;
+            border-radius: 8px;
+            padding: 15px;
+        }
+        .image-container {
+            position: relative;
+            overflow: auto;
+            max-height: 700px;
+            background: #333;
+            border-radius: 4px;
+        }
+        .image-wrapper {
+            position: relative;
+            display: inline-block;
+        }
+        .image-wrapper img {
+            display: block;
+            image-rendering: pixelated;
+        }
+        .image-wrapper canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .zoom-controls {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .zoom-controls button {
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+        .zoom-controls span {
+            font-size: 14px;
+            min-width: 50px;
+            text-align: center;
+        }
+        .info-bar {
+            margin-top: 10px;
+            padding: 10px;
+            background: #333;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .btn-primary {
+            background: #4CAF50;
+            color: white;
+        }
+        .btn-success {
+            background: #2E7D32;
+            color: white;
+            font-weight: bold;
+        }
+        .btn-secondary {
+            background: #666;
+            color: white;
+        }
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        .btn-warning {
+            background: #ff9800;
+            color: white;
+        }
+        .btn-info {
+            background: #2196F3;
+            color: white;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .size-options {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 15px;
+        }
+        .size-btn {
+            padding: 10px 20px;
+            background: #444;
+            color: white;
+            border: 2px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .size-btn.selected {
+            border-color: #4CAF50;
+            background: #2a4a2a;
+        }
+        .custom-size {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .custom-size input {
+            width: 80px;
+            padding: 8px;
+            background: #333;
+            border: 1px solid #555;
+            border-radius: 4px;
+            color: white;
+        }
+        .section-title {
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #4CAF50;
+        }
+        .stats {
+            font-size: 14px;
+            color: #aaa;
+        }
+        .action-buttons {
+            display: flex;
+            gap: 8px;
+            margin-top: 15px;
+        }
+        .hidden {
+            display: none;
+        }
+        .section {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #444;
+        }
+        .tile-info {
+            font-size: 12px;
+            color: #aaa;
+            margin-top: 5px;
+        }
+        .selection-hint {
+            font-size: 11px;
+            color: #888;
+            margin-top: 5px;
+        }
+        .history-panel {
+            margin-top: 15px;
+            padding: 10px;
+            background: #333;
+            border-radius: 4px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .history-item {
+            padding: 5px;
+            margin: 2px 0;
+            background: #444;
+            border-radius: 3px;
+            font-size: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .history-item .action {
+            color: #4CAF50;
+        }
+        .history-item .undo-btn {
+            padding: 2px 8px;
+            font-size: 10px;
+            background: #f44336;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>瓦片切分工具</h1>
+        <div class="stats">
+            当前: <span id="current-num">1</span> / <span id="total-num">0</span> |
+            待处理: <span id="pending-num">0</span> |
+            已处理: <span id="processed-num">0</span> |
+            已跳过: <span id="skipped-num">0</span>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="image-panel">
+            <div class="zoom-controls">
+                <button class="btn-secondary" onclick="zoomOut()">-</button>
+                <span id="zoom-level">100%</span>
+                <button class="btn-secondary" onclick="zoomIn()">+</button>
+                <button class="btn-secondary" onclick="zoomReset()">重置</button>
+                <button class="btn-secondary" onclick="zoomFit()">适应</button>
+                <button class="btn-secondary" onclick="prevUnprocessed()">上一张未处理</button>
+                <button class="btn-secondary" onclick="nextUnprocessed()">下一张未处理</button>
+            </div>
+            <div class="image-container" id="image-container">
+                <div class="image-wrapper" id="image-wrapper">
+                    <img id="main-image" src="" alt="">
+                    <canvas id="grid-canvas"
+                            onclick="handleCanvasClick(event)"
+                            onmousedown="handleCanvasMouseDown(event)"
+                            onmousemove="handleCanvasMouseMove(event)"
+                            onmouseup="handleCanvasMouseUp(event)"
+                            onmouseleave="handleCanvasMouseUp(event)"
+                            oncontextmenu="event.preventDefault()"></canvas>
+                </div>
+            </div>
+            <div class="info-bar">
+                <span id="image-name">-</span> |
+                当前尺寸: <span id="current-size">-</span> |
+                原始尺寸: <span id="original-size">-</span>
+            </div>
+        </div>
+
+        <div class="control-panel">
+            <!-- 操作选择 -->
+            <div class="section" id="section-action">
+                <div class="section-title">选择操作</div>
+                <div class="btn-group">
+                    <button class="btn-info" onclick="showResize()">Resize</button>
+                    <button class="btn-primary" onclick="showSplit()">切分</button>
+                    <button class="btn-danger" onclick="deleteImage()">删除</button>
+                </div>
+                <div class="tile-info" id="action-hint">
+                    可以多次操作，完成后点击"完成"保存
+                </div>
+            </div>
+
+            <!-- Resize选项 -->
+            <div class="section hidden" id="section-resize">
+                <div class="section-title">Resize到</div>
+                <div class="size-options">
+                    <button class="size-btn" onclick="selectResizeSize(16)">16</button>
+                    <button class="size-btn" onclick="selectResizeSize(32)">32</button>
+                    <button class="size-btn" onclick="selectResizeSize(48)">48</button>
+                    <button class="size-btn" onclick="selectResizeSize(64)">64</button>
+                </div>
+                <div class="custom-size">
+                    <span>自定义:</span>
+                    <input type="number" id="resize-custom" min="1" max="512" value="32">
+                    <button class="btn-info" onclick="selectResizeSize(parseInt(document.getElementById('resize-custom').value))">应用</button>
+                </div>
+                <div class="action-buttons">
+                    <button class="btn-primary" onclick="confirmResize()">确认Resize</button>
+                    <button class="btn-secondary" onclick="showActions()">取消</button>
+                </div>
+            </div>
+
+            <!-- 切分选项 -->
+            <div class="section hidden" id="section-split">
+                <div class="section-title">切分尺寸</div>
+                <div class="size-options">
+                    <button class="size-btn" onclick="selectSplitSize(32)">32</button>
+                    <button class="size-btn selected" onclick="selectSplitSize(64)">64</button>
+                    <button class="size-btn" onclick="selectSplitSize(128)">128</button>
+                    <button class="size-btn" onclick="selectSplitSize(256)">256</button>
+                </div>
+                <div class="custom-size">
+                    <span>自定义:</span>
+                    <input type="number" id="split-custom" min="1" max="512" value="32">
+                    <button class="btn-info" onclick="selectSplitSize(parseInt(document.getElementById('split-custom').value))">应用</button>
+                </div>
+                <div id="split-info">将切成 <span id="tile-count">-</span> 个瓦片</div>
+                <div class="action-buttons">
+                    <button class="btn-primary" onclick="confirmSplit()">确认切分</button>
+                    <button class="btn-secondary" onclick="showActions()">取消</button>
+                </div>
+            </div>
+
+            <!-- 瓦片选择 -->
+            <div class="section hidden" id="section-tiles">
+                <div class="section-title">选择瓦片</div>
+                <div class="btn-group">
+                    <button class="btn-secondary" onclick="selectAllTiles()">全选</button>
+                    <button class="btn-secondary" onclick="deselectAllTiles()">取消全选</button>
+                </div>
+                <div class="tile-info">
+                    已选: <span id="selected-count">0</span> / <span id="total-tiles">0</span>
+                </div>
+                <div class="selection-hint">
+                    点击单个瓦片 | 按住左键拖动框选 | 右键拖动取消选择
+                </div>
+                <div class="action-buttons">
+                    <button class="btn-primary" onclick="confirmTileSelection()">确认选择</button>
+                    <button class="btn-secondary" onclick="showActions()">取消</button>
+                </div>
+            </div>
+
+            <!-- 操作历史 -->
+            <div class="section" id="section-history">
+                <div class="section-title">操作历史</div>
+                <div class="history-panel" id="history-panel">
+                    <div class="tile-info">暂无操作</div>
+                </div>
+            </div>
+
+            <!-- 完成操作 -->
+            <div class="section">
+                <div class="section-title">完成</div>
+                <div class="btn-group">
+                    <button class="btn-success" onclick="finishImage()" id="btn-finish">完成并保存</button>
+                    <button class="btn-secondary" onclick="skipImage()">跳过</button>
+                </div>
+            </div>
+
+            <!-- 导航 -->
+            <div class="section">
+                <div class="section-title">导航</div>
+                <div class="btn-group">
+                    <button class="btn-secondary" onclick="prevImage()">上一张</button>
+                    <button class="btn-secondary" onclick="nextImage()">下一张</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentIndex = 0;
+        let totalImages = 0;
+        let originalImageData = null;
+        let currentImageData = null;
+        let currentAction = null;
+        let selectedSize = 32;
+        let splitTiles = [];
+        let selectedTiles = new Set();
+        let zoomScale = 1;
+        let currentTileSize = 32;
+        let isDragging = false;
+        let dragStart = null;
+        let dragEnd = null;
+        let dragMode = 'select';
+        let imageList = [];
+        let operationHistory = [];
+
+        // 初始化
+        async function init() {
+            const response = await fetch('/api/init');
+            const data = await response.json();
+            totalImages = data.total;
+            imageList = data.images || [];
+            document.getElementById('total-num').textContent = totalImages;
+            updateStats();
+            loadImage(0);
+        }
+
+        // 更新统计信息
+        function updateStats() {
+            const processed = imageList.filter(i => i.processed).length;
+            const skipped = imageList.filter(i => i.skipped).length;
+            const pending = totalImages - processed - skipped;
+
+            document.getElementById('pending-num').textContent = pending;
+            document.getElementById('processed-num').textContent = processed;
+            document.getElementById('skipped-num').textContent = skipped;
+        }
+
+        // 加载图片
+        async function loadImage(index) {
+            currentIndex = index;
+            const response = await fetch(`/api/image/${index}`);
+            const data = await response.json();
+
+            if (data.error) {
+                alert(data.error);
+                return;
+            }
+
+            originalImageData = {
+                ...data,
+                width: data.original_width || data.width,
+                height: data.original_height || data.height,
+            };
+            currentImageData = {
+                ...data,
+                width: data.width,
+                height: data.height,
+            };
+            operationHistory = [];
+            splitTiles = [];
+            selectedTiles.clear();
+
+            document.getElementById('current-num').textContent = index + 1;
+            updateImageInfo();
+
+            const img = document.getElementById('main-image');
+            img.src = `/api/image/${index}/file?t=${Date.now()}`;
+            img.onload = function() {
+                currentImageData.width = img.naturalWidth;
+                currentImageData.height = img.naturalHeight;
+                updateImageInfo();
+                zoomFit();
+            };
+
+            showActions();
+            updateHistory();
+        }
+
+        // 更新图片信息显示
+        function updateImageInfo() {
+            let statusText = '';
+            if (imageList[currentIndex]) {
+                if (imageList[currentIndex].processed) {
+                    statusText = ' [已处理]';
+                } else if (imageList[currentIndex].skipped) {
+                    statusText = ' [已跳过]';
+                }
+            }
+            document.getElementById('image-name').textContent = originalImageData.name + statusText;
+            document.getElementById('current-size').textContent = `${currentImageData.width}×${currentImageData.height}`;
+            document.getElementById('original-size').textContent = `${originalImageData.width}×${originalImageData.height}`;
+        }
+
+        // 更新历史显示
+        function updateHistory() {
+            const panel = document.getElementById('history-panel');
+            if (operationHistory.length === 0) {
+                panel.innerHTML = '<div class="tile-info">暂无操作</div>';
+                return;
+            }
+
+            panel.innerHTML = operationHistory.map((op, index) => {
+                let desc = '';
+                if (op.type === 'resize') {
+                    const target = op.target === 'tiles' ? '瓦片' : '整图';
+                    desc = `Resize${target}到 ${op.size}×${op.size}`;
+                } else if (op.type === 'split') {
+                    desc = `切分 ${op.tile_size}×${op.tile_size}`;
+                } else if (op.type === 'select') {
+                    desc = `选择 ${op.count} 个瓦片`;
+                }
+                return `<div class="history-item">
+                    <span class="action">${index + 1}. ${desc}</span>
+                    <button class="undo-btn" onclick="undoToStep(${index})">撤销</button>
+                </div>`;
+            }).join('');
+        }
+
+        // 撤销到指定步骤
+        function undoToStep(stepIndex) {
+            const savedHistory = operationHistory.slice(0, stepIndex);
+            operationHistory = [];
+
+            currentImageData = {...originalImageData};
+            splitTiles = [];
+            selectedTiles.clear();
+
+            for (const op of savedHistory) {
+                if (op.type === 'resize') {
+                    currentImageData.width = op.size;
+                    currentImageData.height = op.size;
+                    operationHistory.push(op);
+                }
+            }
+
+            updateImageInfo();
+            updateHistory();
+            showActions();
+            drawGrid();
+
+            const img = document.getElementById('main-image');
+            img.src = `/api/image/${currentIndex}/file?t=${Date.now()}`;
+            img.onload = function() {
+                zoomFit();
+            };
+        }
+
+        // 跳转到上一张未处理的图片
+        function prevUnprocessed() {
+            for (let i = currentIndex - 1; i >= 0; i--) {
+                if (!imageList[i].processed && !imageList[i].skipped) {
+                    loadImage(i);
+                    return;
+                }
+            }
+            alert('没有更早的未处理图片');
+        }
+
+        // 跳转到下一张未处理的图片
+        function nextUnprocessed() {
+            for (let i = currentIndex + 1; i < totalImages; i++) {
+                if (!imageList[i].processed && !imageList[i].skipped) {
+                    loadImage(i);
+                    return;
+                }
+            }
+            alert('没有更多的未处理图片');
+        }
+
+        // 缩放功能
+        function zoomIn() {
+            zoomScale = Math.min(zoomScale * 1.5, 10);
+            applyZoom();
+        }
+
+        function zoomOut() {
+            zoomScale = Math.max(zoomScale / 1.5, 0.1);
+            applyZoom();
+        }
+
+        function zoomReset() {
+            zoomScale = 1;
+            applyZoom();
+        }
+
+        function zoomFit() {
+            const img = document.getElementById('main-image');
+            const container = document.getElementById('image-container');
+            if (!img.naturalWidth) return;
+
+            // 使用固定的最大尺寸避免滚动条影响
+            const maxWidth = 800;
+            const maxHeight = 600;
+
+            const scaleX = maxWidth / img.naturalWidth;
+            const scaleY = maxHeight / img.naturalHeight;
+            zoomScale = Math.min(scaleX, scaleY, 4);
+            applyZoom();
+        }
+
+        function applyZoom() {
+            const img = document.getElementById('main-image');
+            img.style.width = (img.naturalWidth * zoomScale) + 'px';
+            img.style.height = (img.naturalHeight * zoomScale) + 'px';
+            document.getElementById('zoom-level').textContent = Math.round(zoomScale * 100) + '%';
+            drawGrid();
+        }
+
+        // 显示操作选择
+        function showActions() {
+            currentAction = null;
+            document.getElementById('section-action').classList.remove('hidden');
+            document.getElementById('section-resize').classList.add('hidden');
+            document.getElementById('section-split').classList.add('hidden');
+            document.getElementById('section-tiles').classList.add('hidden');
+
+            const canvas = document.getElementById('grid-canvas');
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        // 显示resize选项
+        function showResize() {
+            currentAction = 'resize';
+            document.getElementById('section-action').classList.add('hidden');
+            document.getElementById('section-resize').classList.remove('hidden');
+            document.getElementById('section-split').classList.add('hidden');
+            document.getElementById('section-tiles').classList.add('hidden');
+        }
+
+        // 显示切分选项
+        function showSplit() {
+            currentAction = 'split';
+            document.getElementById('section-action').classList.add('hidden');
+            document.getElementById('section-resize').classList.add('hidden');
+            document.getElementById('section-split').classList.remove('hidden');
+            document.getElementById('section-tiles').classList.add('hidden');
+            updateSplitInfo();
+            drawGrid();
+        }
+
+        // 选择resize尺寸
+        function selectResizeSize(size) {
+            selectedSize = size;
+            document.querySelectorAll('#section-resize .size-btn').forEach(btn => {
+                btn.classList.remove('selected');
+                if (parseInt(btn.textContent) === size) {
+                    btn.classList.add('selected');
+                }
+            });
+        }
+
+        // 选择切分尺寸
+        function selectSplitSize(size) {
+            selectedSize = size;
+            currentTileSize = size;
+            document.querySelectorAll('#section-split .size-btn').forEach(btn => {
+                btn.classList.remove('selected');
+                if (parseInt(btn.textContent) === size) {
+                    btn.classList.add('selected');
+                }
+            });
+            updateSplitInfo();
+            drawGrid();
+        }
+
+        // 更新切分信息
+        function updateSplitInfo() {
+            if (!currentImageData) return;
+            const cols = Math.floor(currentImageData.width / selectedSize);
+            const rows = Math.floor(currentImageData.height / selectedSize);
+            document.getElementById('tile-count').textContent = `${cols}×${rows} = ${cols * rows}`;
+        }
+
+        // 绘制网格和瓦片选择
+        function drawGrid() {
+            const canvas = document.getElementById('grid-canvas');
+            const img = document.getElementById('main-image');
+
+            if (!img.naturalWidth) return;
+
+            const displayWidth = img.clientWidth;
+            const displayHeight = img.clientHeight;
+
+            canvas.width = displayWidth;
+            canvas.height = displayHeight;
+            canvas.style.width = displayWidth + 'px';
+            canvas.style.height = displayHeight + 'px';
+
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (!currentAction && splitTiles.length === 0) return;
+
+            const scaleX = displayWidth / currentImageData.width;
+            const scaleY = displayHeight / currentImageData.height;
+
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 1;
+
+            for (let x = 0; x <= currentImageData.width; x += currentTileSize) {
+                ctx.beginPath();
+                ctx.moveTo(x * scaleX, 0);
+                ctx.lineTo(x * scaleX, displayHeight);
+                ctx.stroke();
+            }
+
+            for (let y = 0; y <= currentImageData.height; y += currentTileSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y * scaleY);
+                ctx.lineTo(displayWidth, y * scaleY);
+                ctx.stroke();
+            }
+
+            if (splitTiles.length > 0) {
+                splitTiles.forEach(tile => {
+                    const x = tile.x * scaleX;
+                    const y = tile.y * scaleY;
+                    const w = currentTileSize * scaleX;
+                    const h = currentTileSize * scaleY;
+
+                    if (selectedTiles.has(tile.id)) {
+                        ctx.fillStyle = 'rgba(76, 175, 80, 0.3)';
+                        ctx.fillRect(x, y, w, h);
+                        ctx.strokeStyle = 'rgba(76, 175, 80, 0.8)';
+                    } else {
+                        ctx.fillStyle = 'rgba(100, 100, 100, 0.3)';
+                        ctx.fillRect(x, y, w, h);
+                        ctx.strokeStyle = 'rgba(100, 100, 100, 0.5)';
+                    }
+
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x, y, w, h);
+                });
+            }
+        }
+
+        // 处理canvas鼠标按下事件
+        function handleCanvasMouseDown(event) {
+            if (splitTiles.length === 0) return;
+            event.preventDefault();
+
+            const canvas = document.getElementById('grid-canvas');
+            const rect = canvas.getBoundingClientRect();
+
+            const mouseX = event.clientX - rect.left;
+            const mouseY = event.clientY - rect.top;
+
+            if (event.button === 2) {
+                dragMode = 'deselect';
+            } else {
+                dragMode = 'select';
+            }
+
+            isDragging = true;
+            dragStart = { x: mouseX, y: mouseY };
+            dragEnd = { x: mouseX, y: mouseY };
+        }
+
+        // 处理canvas鼠标移动事件
+        function handleCanvasMouseMove(event) {
+            if (!isDragging || splitTiles.length === 0) return;
+
+            const canvas = document.getElementById('grid-canvas');
+            const rect = canvas.getBoundingClientRect();
+
+            dragEnd = {
+                x: Math.max(0, Math.min(event.clientX - rect.left, canvas.width)),
+                y: Math.max(0, Math.min(event.clientY - rect.top, canvas.height))
+            };
+
+            drawGrid();
+
+            const ctx = canvas.getContext('2d');
+            const x = Math.min(dragStart.x, dragEnd.x);
+            const y = Math.min(dragStart.y, dragEnd.y);
+            const w = Math.abs(dragEnd.x - dragStart.x);
+            const h = Math.abs(dragEnd.y - dragStart.y);
+
+            ctx.strokeStyle = dragMode === 'select' ? 'rgba(76, 175, 80, 0.8)' : 'rgba(244, 67, 54, 0.8)';
+            ctx.fillStyle = dragMode === 'select' ? 'rgba(76, 175, 80, 0.1)' : 'rgba(244, 67, 54, 0.1)';
+            ctx.lineWidth = 2;
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeRect(x, y, w, h);
+        }
+
+        // 处理canvas鼠标松开事件
+        function handleCanvasMouseUp(event) {
+            if (!isDragging || splitTiles.length === 0) return;
+            isDragging = false;
+
+            const img = document.getElementById('main-image');
+            const scaleX = currentImageData.width / img.clientWidth;
+            const scaleY = currentImageData.height / img.clientHeight;
+
+            const x1 = Math.min(dragStart.x, dragEnd.x) * scaleX;
+            const y1 = Math.min(dragStart.y, dragEnd.y) * scaleY;
+            const x2 = Math.max(dragStart.x, dragEnd.x) * scaleX;
+            const y2 = Math.max(dragStart.y, dragEnd.y) * scaleY;
+
+            const cols = Math.floor(currentImageData.width / currentTileSize);
+            const rows = Math.floor(currentImageData.height / currentTileSize);
+
+            for (let row = 0; row < rows; row++) {
+                for (let col = 0; col < cols; col++) {
+                    const tileX = col * currentTileSize;
+                    const tileY = row * currentTileSize;
+                    const tileId = row * cols + col;
+
+                    const tileCenterX = tileX + currentTileSize / 2;
+                    const tileCenterY = tileY + currentTileSize / 2;
+
+                    if (tileCenterX >= x1 && tileCenterX <= x2 &&
+                        tileCenterY >= y1 && tileCenterY <= y2) {
+                        if (dragMode === 'select') {
+                            selectedTiles.add(tileId);
+                        } else {
+                            selectedTiles.delete(tileId);
+                        }
+                    }
+                }
+            }
+
+            drawGrid();
+            document.getElementById('selected-count').textContent = selectedTiles.size;
+        }
+
+        // 处理canvas点击事件
+        function handleCanvasClick(event) {
+            if (splitTiles.length === 0) return;
+
+            if (dragStart && dragEnd) {
+                const dx = Math.abs(dragEnd.x - dragStart.x);
+                const dy = Math.abs(dragEnd.y - dragStart.y);
+                if (dx > 5 || dy > 5) return;
+            }
+
+            const canvas = document.getElementById('grid-canvas');
+            const img = document.getElementById('main-image');
+            const rect = canvas.getBoundingClientRect();
+
+            const clickX = event.clientX - rect.left;
+            const clickY = event.clientY - rect.top;
+
+            const scaleX = currentImageData.width / img.clientWidth;
+            const scaleY = currentImageData.height / img.clientHeight;
+
+            const imgX = clickX * scaleX;
+            const imgY = clickY * scaleY;
+
+            const col = Math.floor(imgX / currentTileSize);
+            const row = Math.floor(imgY / currentTileSize);
+            const cols = Math.floor(currentImageData.width / currentTileSize);
+            const tileId = row * cols + col;
+
+            if (selectedTiles.has(tileId)) {
+                selectedTiles.delete(tileId);
+            } else {
+                selectedTiles.add(tileId);
+            }
+
+            drawGrid();
+            document.getElementById('selected-count').textContent = selectedTiles.size;
+        }
+
+        // 确认resize
+        async function confirmResize() {
+            const hasTiles = splitTiles.length > 0 && selectedTiles.size > 0;
+
+            const response = await fetch('/api/resize', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    index: currentIndex,
+                    size: selectedSize,
+                    selected_tiles: hasTiles ? Array.from(selectedTiles) : [],
+                })
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                // 更新瓦片信息
+                if (hasTiles && data.tiles) {
+                    splitTiles = data.tiles;
+                    currentTileSize = data.tile_size || selectedSize;
+                    // 保持选中状态
+                    selectedTiles = new Set(data.tiles.map(t => t.id));
+                }
+
+                operationHistory.push({
+                    type: 'resize',
+                    size: selectedSize,
+                    target: hasTiles ? 'tiles' : 'image'
+                });
+
+                // 重新加载图片
+                const img = document.getElementById('main-image');
+                img.src = `/api/image/${currentIndex}/file?t=${Date.now()}`;
+                img.onload = function() {
+                    currentImageData.width = img.naturalWidth;
+                    currentImageData.height = img.naturalHeight;
+                    updateImageInfo();
+                    zoomFit();
+
+                    // 如果有瓦片，显示瓦片选择界面
+                    if (splitTiles.length > 0) {
+                        showTileSelection();
+                    } else {
+                        showActions();
+                    }
+                };
+
+                updateHistory();
+            } else {
+                alert('错误: ' + data.error);
+            }
+        }
+
+        // 确认切分
+        async function confirmSplit() {
+            const response = await fetch('/api/split', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    index: currentIndex,
+                    tile_size: selectedSize,
+                })
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                splitTiles = data.tiles;
+                selectedTiles = new Set(data.tiles.map(t => t.id));
+                currentTileSize = selectedSize;
+
+                if (data.current_size) {
+                    currentImageData.width = data.current_size.width;
+                    currentImageData.height = data.current_size.height;
+                    updateImageInfo();
+                }
+
+                operationHistory.push({ type: 'split', tile_size: selectedSize });
+
+                showTileSelection();
+                updateHistory();
+            } else {
+                alert('错误: ' + data.error);
+            }
+        }
+
+        // 显示瓦片选择界面
+        function showTileSelection() {
+            currentAction = 'select';
+            document.getElementById('section-action').classList.add('hidden');
+            document.getElementById('section-resize').classList.add('hidden');
+            document.getElementById('section-split').classList.add('hidden');
+            document.getElementById('section-tiles').classList.remove('hidden');
+
+            document.getElementById('total-tiles').textContent = splitTiles.length;
+            document.getElementById('selected-count').textContent = selectedTiles.size;
+
+            drawGrid();
+        }
+
+        // 确认瓦片选择
+        function confirmTileSelection() {
+            operationHistory.push({ type: 'select', count: selectedTiles.size });
+            updateHistory();
+            showActions();
+        }
+
+        // 全选瓦片
+        function selectAllTiles() {
+            selectedTiles = new Set(splitTiles.map(t => t.id));
+            drawGrid();
+            document.getElementById('selected-count').textContent = selectedTiles.size;
+        }
+
+        // 取消全选
+        function deselectAllTiles() {
+            selectedTiles.clear();
+            drawGrid();
+            document.getElementById('selected-count').textContent = 0;
+        }
+
+        // 完成图片处理
+        async function finishImage() {
+            if (operationHistory.length === 0) {
+                alert('请先进行至少一个操作');
+                return;
+            }
+
+            const hasSplit = operationHistory.some(op => op.type === 'split');
+            if (hasSplit && splitTiles.length > 0 && selectedTiles.size === 0) {
+                if (!confirm('没有选择任何瓦片，确定要完成吗？')) {
+                    return;
+                }
+            }
+
+            const response = await fetch('/api/finish', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    index: currentIndex,
+                    operations: operationHistory,
+                    selected_tiles: Array.from(selectedTiles),
+                    tile_size: currentTileSize,
+                })
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                alert(data.message);
+                imageList[currentIndex].processed = true;
+                updateStats();
+                nextImage();
+            } else {
+                alert('错误: ' + data.error);
+            }
+        }
+
+        // 跳过图片
+        async function skipImage() {
+            // 清理临时文件
+            const response = await fetch('/api/skip', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({index: currentIndex})
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                // 更新本地状态
+                imageList[currentIndex].skipped = true;
+                updateStats();
+                nextImage();
+            }
+        }
+
+        // 删除图片
+        async function deleteImage() {
+            if (!confirm('确定删除这张图片?')) return;
+
+            const response = await fetch('/api/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({index: currentIndex})
+            });
+            const data = await response.json();
+
+            if (data.success) {
+                imageList[currentIndex].processed = true;
+                updateStats();
+                alert(data.message);
+                nextImage();
+            }
+        }
+
+        // 上一张
+        function prevImage() {
+            if (currentIndex > 0) {
+                loadImage(currentIndex - 1);
+            }
+        }
+
+        // 下一张
+        function nextImage() {
+            if (currentIndex < totalImages - 1) {
+                loadImage(currentIndex + 1);
+            } else {
+                alert('已经是最后一张');
+            }
+        }
+
+        // 滚轮缩放
+        document.getElementById('image-container').addEventListener('wheel', function(e) {
+            e.preventDefault();
+            if (e.deltaY < 0) {
+                zoomIn();
+            } else {
+                zoomOut();
+            }
+        });
+
+        // 窗口大小变化时重绘
+        window.addEventListener('resize', () => {
+            drawGrid();
+        });
+
+        // 初始化
+        init();
+    </script>
+</body>
+</html>
