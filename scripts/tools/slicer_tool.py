@@ -20,7 +20,7 @@ from io import BytesIO
 
 # 配置
 CONFIG = {
-    "project_root": Path(__file__).parent.parent,
+    "project_root": Path(__file__).parent.parent.parent,
     "input_dir": "datasets/classified/spritesheet",
     "output_dir": "datasets/classified/pixel_32",
     "port": 5001,
@@ -466,6 +466,79 @@ def api_delete():
     return jsonify({
         "success": True,
         "message": "已标记删除",
+    })
+
+
+@app.route('/api/import', methods=['POST'])
+def api_import():
+    """导入外部PNG图片"""
+    if 'file' not in request.files:
+        return jsonify({"error": "没有文件"})
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "文件名为空"})
+
+    # 检查文件类型
+    allowed_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp'}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_extensions:
+        return jsonify({"error": f"不支持的文件类型: {ext}"})
+
+    # 保存文件
+    input_dir = CONFIG["project_root"] / CONFIG["input_dir"]
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    save_path = input_dir / file.filename
+    file.save(save_path)
+
+    # 重新扫描图片
+    scan_images()
+
+    return jsonify({
+        "success": True,
+        "message": f"导入成功: {file.filename}",
+        "total": len(images),
+    })
+
+
+@app.route('/api/import_folder', methods=['POST'])
+def api_import_folder():
+    """导入文件夹中的所有图片"""
+    data = request.json
+    folder_path = data.get('folder_path', '')
+
+    if not folder_path:
+        return jsonify({"error": "文件夹路径为空"})
+
+    folder = Path(folder_path)
+    if not folder.exists():
+        return jsonify({"error": f"文件夹不存在: {folder_path}"})
+
+    if not folder.is_dir():
+        return jsonify({"error": f"不是文件夹: {folder_path}"})
+
+    # 复制图片到输入目录
+    input_dir = CONFIG["project_root"] / CONFIG["input_dir"]
+    input_dir.mkdir(parents=True, exist_ok=True)
+
+    allowed_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp'}
+    copied_count = 0
+
+    for file_path in folder.iterdir():
+        if file_path.is_file() and file_path.suffix.lower() in allowed_extensions:
+            dst = input_dir / file_path.name
+            if not dst.exists():
+                shutil.copy2(file_path, dst)
+                copied_count += 1
+
+    # 重新扫描图片
+    scan_images()
+
+    return jsonify({
+        "success": True,
+        "message": f"导入成功: {copied_count} 张图片",
+        "total": len(images),
     })
 
 

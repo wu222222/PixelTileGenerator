@@ -1,17 +1,15 @@
 """
-AutoEncoder 训练脚本
+VQ-VAE v5 训练脚本
 
-功能:
-- 训练CNN AutoEncoder学习32×32像素瓦片的latent space
-- 支持快速验证和正式训练
-- 保存训练历史和模型检查点
+改进:
+- Latent大小: 8×8 → 16×16 (64 → 256 tokens)
+- 信息容量提升4倍
 """
 
 import sys
 import json
 import time
 from pathlib import Path
-from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -24,34 +22,35 @@ from PIL import Image
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from models.autoencoder import AutoEncoder
-from models.autoencoder_resnet import ResNetAutoEncoder
+from models.vq_vae_v2 import VQVAEv2
 
 
 # 配置
 CONFIG = {
     # 数据
     "data_dir": "datasets/classified/pixel_32_quantized",
-    "image_size": 32,
-    "channels": 4,  # RGBA
 
     # 模型
-    "model_type": "resnet",  # "simple" 或 "resnet"
-    "latent_dim": 64,  # 减少到64
+    "in_channels": 4,
+    "hidden_channels": 256,
+    "embedding_dim": 64,
+    "num_embeddings": 256,  # 增大码本以适应更多tokens
+    "commitment_cost": 0.25,
 
     # 训练参数
     "batch_size": 32,
-    "epochs": 200,
-    "learning_rate": 3e-4,
+    "epochs": 500,
+    "learning_rate": 1e-3,
     "weight_decay": 1e-5,
 
-    # 损失函数
-    "loss_type": "l1",  # "mse", "l1", 或 "mse_l1"
+    # 损失函数权重
+    "mse_weight": 0.5,
+    "l1_weight": 0.5,
 
     # 保存
-    "checkpoint_dir": "checkpoints/autoencoder_v4",
-    "save_every": 20,  # 每20个epoch保存一次
-    "sample_every": 10,  # 每10个epoch生成样本
+    "checkpoint_dir": "checkpoints/vqvae_v5",
+    "save_every": 50,
+    "sample_every": 25,
 
     # 设备
     "device": "cuda" if torch.cuda.is_available() else "cpu",
@@ -65,7 +64,6 @@ class TileDataset(Dataset):
         self.data_dir = Path(data_dir)
         self.transform = transform
 
-        # 获取所有图片文件
         image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
         self.image_files = [
             f for f in self.data_dir.iterdir()
@@ -79,11 +77,8 @@ class TileDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = self.image_files[idx]
-
-        # 加载图片
         img = Image.open(img_path).convert("RGBA")
 
-        # 应用变换
         if self.transform:
             img = self.transform(img)
 
@@ -91,9 +86,17 @@ class TileDataset(Dataset):
 
 
 def get_transforms():
-    """获取数据变换"""
+    """获取数据变换（带增强）"""
     return transforms.Compose([
-        transforms.ToTensor(),  # 转换为 [0, 1] 范围
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomChoice([
+            transforms.Lambda(lambda x: x),
+            transforms.Lambda(lambda x: x.rotate(90)),
+            transforms.Lambda(lambda x: x.rotate(180)),
+            transforms.Lambda(lambda x: x.rotate(270)),
+        ]),
+        transforms.ToTensor(),
     ])
 
 
@@ -110,11 +113,9 @@ def save_samples(model, dataset, device, save_dir, epoch, num_samples=8):
     """保存重建样本"""
     model.eval()
 
-    # 创建保存目录
     samples_dir = Path(save_dir) / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
 
-    # 获取随机样本
     indices = torch.randperm(len(dataset))[:num_samples]
 
     with torch.no_grad():
@@ -123,31 +124,26 @@ def save_samples(model, dataset, device, save_dir, epoch, num_samples=8):
             img = img.unsqueeze(0).to(device)
 
             # 重建
-            reconstruction = model(img)
-
-            # 保存原图和重建图
-            original = img.squeeze(0).cpu()
-            recon = reconstruction.squeeze(0).cpu()
+            recon, _, _ = model(img)
 
             # 转换为PIL图片
-            original_pil = transforms.ToPILImage()(original)
-            recon_pil = transforms.ToPILImage()(recon)
+            original_pil = transforms.ToPILImage()(img.squeeze(0).cpu())
+            recon_pil = transforms.ToPILImage()(recon.squeeze(0).cpu())
 
             # 量化重建图
             recon_quantized = quantize_image(recon_pil, colors=32)
 
-            # 保存单独的重建图（量化后）
-            recon_quantized_large = recon_quantized.resize((128, 128), Image.Resampling.NEAREST)
-            recon_quantized_large.save(samples_dir / f"epoch_{epoch:03d}_recon_{i}.png")
-
-            # 保存原图
+            # 保存
             original_large = original_pil.resize((128, 128), Image.Resampling.NEAREST)
-            original_large.save(samples_dir / f"epoch_{epoch:03d}_original_{i}.png")
+            recon_large = recon_quantized.resize((128, 128), Image.Resampling.NEAREST)
 
-            # 创建对比图
+            original_large.save(samples_dir / f"epoch_{epoch:03d}_original_{i}.png")
+            recon_large.save(samples_dir / f"epoch_{epoch:03d}_recon_{i}.png")
+
+            # 对比图
             comparison = Image.new("RGBA", (128 * 2 + 10, 128))
             comparison.paste(original_large, (0, 0))
-            comparison.paste(recon_quantized_large, (128 + 10, 0))
+            comparison.paste(recon_large, (128 + 10, 0))
             comparison.save(samples_dir / f"epoch_{epoch:03d}_comparison_{i}.png")
 
     model.train()
@@ -156,39 +152,47 @@ def save_samples(model, dataset, device, save_dir, epoch, num_samples=8):
 def train():
     """训练函数"""
     print("=" * 60)
-    print("AutoEncoder 训练")
+    print("VQ-VAE v5 训练 (16×16 Latent)")
     print("=" * 60)
     print(f"设备: {CONFIG['device']}")
-    print(f"Latent维度: {CONFIG['latent_dim']}")
+    print(f"Latent大小: 16×16 (256 tokens)")
+    print(f"码本大小: {CONFIG['num_embeddings']}")
+    print(f"损失函数: MSE({CONFIG['mse_weight']}) + L1({CONFIG['l1_weight']})")
     print(f"Batch Size: {CONFIG['batch_size']}")
     print(f"Epochs: {CONFIG['epochs']}")
-    print(f"Learning Rate: {CONFIG['learning_rate']}")
     print("=" * 60)
 
     # 创建保存目录
-    checkpoint_dir = Path(CONFIG["checkpoint_dir"])
+    checkpoint_dir = project_root / CONFIG["checkpoint_dir"]
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     # 数据变换
     transform = get_transforms()
 
     # 加载数据集
-    dataset = TileDataset(CONFIG["data_dir"], transform=transform)
+    dataset = TileDataset(project_root / CONFIG["data_dir"], transform=transform)
 
     # 创建数据加载器
     dataloader = DataLoader(
         dataset,
         batch_size=CONFIG["batch_size"],
         shuffle=True,
-        num_workers=0,  # Windows下设为0
+        num_workers=0,
         pin_memory=True,
     )
 
     # 创建模型
-    if CONFIG["model_type"] == "resnet":
-        model = ResNetAutoEncoder(latent_dim=CONFIG["latent_dim"]).to(CONFIG["device"])
-    else:
-        model = AutoEncoder(latent_dim=CONFIG["latent_dim"]).to(CONFIG["device"])
+    model = VQVAEv2(
+        in_channels=CONFIG["in_channels"],
+        hidden_channels=CONFIG["hidden_channels"],
+        embedding_dim=CONFIG["embedding_dim"],
+        num_embeddings=CONFIG["num_embeddings"],
+        commitment_cost=CONFIG["commitment_cost"],
+    ).to(CONFIG["device"])
+
+    # 损失函数
+    mse_loss = nn.MSELoss()
+    l1_loss = nn.L1Loss()
 
     # 优化器
     optimizer = optim.Adam(
@@ -198,29 +202,23 @@ def train():
     )
 
     # 学习率调度器
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
-
-    # 损失函数
-    if CONFIG["loss_type"] == "mse":
-        criterion = nn.MSELoss()
-    elif CONFIG["loss_type"] == "l1":
-        criterion = nn.L1Loss()
-    elif CONFIG["loss_type"] == "mse_l1":
-        mse_criterion = nn.MSELoss()
-        l1_criterion = nn.L1Loss()
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=CONFIG["epochs"])
 
     # 打印模型信息
     total_params = sum(p.numel() for p in model.parameters())
     print(f"\n模型参数量: {total_params:,}")
     print(f"数据集大小: {len(dataset)}")
     print(f"Batch数量: {len(dataloader)}")
-    print(f"损失函数: {CONFIG['loss_type'].upper()}")
     print()
 
     # 训练历史
     history = {
-        "train_loss": [],
-        "learning_rate": [],
+        "total_loss": [],
+        "recon_loss": [],
+        "mse_loss": [],
+        "l1_loss": [],
+        "vq_loss": [],
+        "codebook_usage": [],
     }
 
     # 训练循环
@@ -228,36 +226,57 @@ def train():
     start_time = time.time()
 
     for epoch in range(CONFIG["epochs"]):
-        model.train()
-        epoch_loss = 0.0
+        epoch_total_loss = 0.0
+        epoch_recon_loss = 0.0
+        epoch_mse_loss = 0.0
+        epoch_l1_loss = 0.0
+        epoch_vq_loss = 0.0
+        epoch_usage = 0.0
         num_batches = 0
 
         for batch_idx, (images, names) in enumerate(dataloader):
             images = images.to(CONFIG["device"])
 
             # 前向传播
-            reconstructions = model(images)
+            recon, vq_loss, indices = model(images)
 
-            # 计算损失
-            if CONFIG["loss_type"] == "mse_l1":
-                mse_loss = mse_criterion(reconstructions, images)
-                l1_loss = l1_criterion(reconstructions, images)
-                loss = mse_loss + 0.1 * l1_loss
-            else:
-                loss = criterion(reconstructions, images)
+            # 计算重建损失（L1 + MSE）
+            mse = mse_loss(recon, images)
+            l1 = l1_loss(recon, images)
+            recon_loss = CONFIG["mse_weight"] * mse + CONFIG["l1_weight"] * l1
+
+            # 总损失
+            total_loss = recon_loss + vq_loss
 
             # 反向传播
             optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             optimizer.step()
 
-            epoch_loss += loss.item()
+            # 统计码本使用率
+            usage, _ = model.vq.get_codebook_usage(indices)
+
+            epoch_total_loss += total_loss.item()
+            epoch_recon_loss += recon_loss.item()
+            epoch_mse_loss += mse.item()
+            epoch_l1_loss += l1.item()
+            epoch_vq_loss += vq_loss.item()
+            epoch_usage += usage
             num_batches += 1
 
         # 计算平均损失
-        avg_loss = epoch_loss / num_batches
-        history["train_loss"].append(avg_loss)
-        history["learning_rate"].append(scheduler.get_last_lr()[0])
+        avg_total_loss = epoch_total_loss / num_batches
+        avg_recon_loss = epoch_recon_loss / num_batches
+        avg_mse_loss = epoch_mse_loss / num_batches
+        avg_l1_loss = epoch_l1_loss / num_batches
+        avg_vq_loss = epoch_vq_loss / num_batches
+        avg_usage = epoch_usage / num_batches
+        history["total_loss"].append(avg_total_loss)
+        history["recon_loss"].append(avg_recon_loss)
+        history["mse_loss"].append(avg_mse_loss)
+        history["l1_loss"].append(avg_l1_loss)
+        history["vq_loss"].append(avg_vq_loss)
+        history["codebook_usage"].append(avg_usage)
 
         # 更新学习率
         scheduler.step()
@@ -265,8 +284,12 @@ def train():
         # 打印进度
         elapsed_time = time.time() - start_time
         print(f"Epoch [{epoch+1}/{CONFIG['epochs']}] "
-              f"Loss: {avg_loss:.6f} "
-              f"LR: {scheduler.get_last_lr()[0]:.6f} "
+              f"Total: {avg_total_loss:.4f} "
+              f"Recon: {avg_recon_loss:.4f} "
+              f"MSE: {avg_mse_loss:.4f} "
+              f"L1: {avg_l1_loss:.4f} "
+              f"VQ: {avg_vq_loss:.4f} "
+              f"Usage: {avg_usage:.2%} "
               f"Time: {elapsed_time:.1f}s")
 
         # 保存样本
@@ -275,20 +298,20 @@ def train():
 
         # 保存检查点
         if (epoch + 1) % CONFIG["save_every"] == 0:
-            checkpoint_path = checkpoint_dir / f"autoencoder_epoch_{epoch+1:03d}.pth"
+            checkpoint_path = checkpoint_dir / f"vqvae_v5_epoch_{epoch+1:03d}.pth"
             torch.save({
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "loss": avg_loss,
+                "loss": avg_total_loss,
                 "config": CONFIG,
             }, checkpoint_path)
             print(f"  检查点已保存: {checkpoint_path}")
 
         # 保存最佳模型
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            best_path = checkpoint_dir / "autoencoder_best.pth"
+        if avg_total_loss < best_loss:
+            best_loss = avg_total_loss
+            best_path = checkpoint_dir / "vqvae_v5_best.pth"
             torch.save({
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
@@ -298,12 +321,12 @@ def train():
             }, best_path)
 
     # 保存最终模型
-    final_path = checkpoint_dir / "autoencoder_final.pth"
+    final_path = checkpoint_dir / "vqvae_v5_final.pth"
     torch.save({
         "epoch": CONFIG["epochs"],
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "loss": avg_loss,
+        "loss": avg_total_loss,
         "config": CONFIG,
     }, final_path)
 
@@ -318,8 +341,9 @@ def train():
     print("训练完成!")
     print("=" * 60)
     print(f"总时间: {total_time:.1f}s ({total_time/60:.1f}min)")
-    print(f"最佳损失: {best_loss:.6f}")
-    print(f"最终损失: {avg_loss:.6f}")
+    print(f"最佳损失: {best_loss:.4f}")
+    print(f"最终损失: {avg_total_loss:.4f}")
+    print(f"最终码本使用率: {avg_usage:.2%}")
     print(f"模型保存在: {checkpoint_dir}")
     print("=" * 60)
 

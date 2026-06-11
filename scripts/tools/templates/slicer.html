@@ -23,6 +23,12 @@
             padding: 15px;
             background: #2a2a2a;
             border-radius: 8px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .import-controls {
+            display: flex;
+            gap: 8px;
         }
         .main-content {
             display: flex;
@@ -225,6 +231,11 @@
             待处理: <span id="pending-num">0</span> |
             已处理: <span id="processed-num">0</span> |
             已跳过: <span id="skipped-num">0</span>
+        </div>
+        <div class="import-controls">
+            <input type="file" id="file-input" accept=".png,.jpg,.jpeg,.gif,.bmp" style="display:none" onchange="importFile()">
+            <button class="btn-info" onclick="document.getElementById('file-input').click()">导入图片</button>
+            <button class="btn-info" onclick="importFolder()">导入文件夹</button>
         </div>
     </div>
 
@@ -1051,6 +1062,68 @@
         window.addEventListener('resize', () => {
             drawGrid();
         });
+
+        // 导入单个文件
+        async function importFile() {
+            const fileInput = document.getElementById('file-input');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const response = await fetch('/api/import', {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert(data.message);
+                    // 重新加载
+                    init();
+                } else {
+                    alert('错误: ' + data.error);
+                }
+            } catch (error) {
+                alert('导入失败: ' + error.message);
+            }
+
+            // 清空input
+            fileInput.value = '';
+        }
+
+        // 导入文件夹
+        async function importFolder() {
+            const folderPath = prompt('请输入文件夹路径:');
+
+            if (!folderPath) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/import_folder', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({folder_path: folderPath}),
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    alert(data.message);
+                    // 重新加载
+                    init();
+                } else {
+                    alert('错误: ' + data.error);
+                }
+            } catch (error) {
+                alert('导入失败: ' + error.message);
+            }
+        }
 
         // 初始化
         init();

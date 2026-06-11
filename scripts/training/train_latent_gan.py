@@ -1,40 +1,43 @@
 """
-Terrain WGAN-GP 训练脚本
+Latent Space GAN 训练脚本
 
 功能:
-- 无条件生成地形纹理
-- 使用WGAN-GP训练
-- 只用terrain数据
+- 在AutoEncoder的latent space训练WGAN-GP
+- 生成新的latent z
+- 用Decoder生成图片
 """
 
 import sys
 import json
 import time
+import numpy as np
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
 from PIL import Image
 
 # 添加项目根目录到路径
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+from models.autoencoder_resnet import ResNetAutoEncoder
+
 
 # 配置
 CONFIG = {
     # 数据
-    "data_dir": "datasets/classified/candidates/grass",
+    "latent_data": "datasets/latent_data",
+    "autoencoder_checkpoint": "checkpoints/autoencoder_resnet/autoencoder_best.pth",
 
     # 模型
     "latent_dim": 128,
 
     # 训练参数
     "batch_size": 64,
-    "epochs": 300,
+    "epochs": 500,
     "lr_g": 1e-4,
     "lr_d": 1e-4,
     "beta1": 0.0,
@@ -45,7 +48,7 @@ CONFIG = {
     "n_critic": 5,
 
     # 保存
-    "checkpoint_dir": "checkpoints/grass_wgan",
+    "checkpoint_dir": "checkpoints/latent_gan",
     "save_every": 50,
     "sample_every": 25,
 
@@ -54,129 +57,68 @@ CONFIG = {
 }
 
 
-class TerrainDataset(Dataset):
-    """地形纹理数据集"""
+class LatentDataset(Dataset):
+    """Latent vector数据集"""
 
-    def __init__(self, data_dir, transform=None):
-        self.data_dir = Path(data_dir)
-        self.transform = transform
-
-        # 获取所有图片
-        image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
-        self.image_files = [
-            f for f in self.data_dir.iterdir()
-            if f.is_file() and f.suffix.lower() in image_extensions
-        ]
-
-        print(f"加载数据集: {len(self.image_files)} 张图片")
+    def __init__(self, latent_data_path):
+        self.latents = np.load(latent_data_path / "latents.npy")
+        print(f"加载数据集: {len(self.latents)} 个latent vectors")
 
     def __len__(self):
-        return len(self.image_files)
+        return len(self.latents)
 
     def __getitem__(self, idx):
-        img_path = self.image_files[idx]
-        img = Image.open(img_path).convert("RGBA")
-
-        if self.transform:
-            img = self.transform(img)
-
-        return img
+        return torch.FloatTensor(self.latents[idx])
 
 
-class Generator(nn.Module):
-    """无条件生成器"""
+class LatentGenerator(nn.Module):
+    """Latent空间生成器"""
 
     def __init__(self, latent_dim=128):
         super().__init__()
 
         self.latent_dim = latent_dim
 
-        # 全连接层
         self.fc = nn.Sequential(
-            nn.Linear(latent_dim, 512 * 2 * 2),
-            nn.ReLU(inplace=True),
-        )
-
-        # 上采样层
-        self.conv = nn.Sequential(
-            # 2×2 → 4×4
-            nn.ConvTranspose2d(512, 256, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-
-            # 4×4 → 8×8
-            nn.ConvTranspose2d(256, 128, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-
-            # 8×8 → 16×16
-            nn.ConvTranspose2d(128, 64, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-
-            # 16×16 → 32×32
-            nn.ConvTranspose2d(64, 4, kernel_size=3, stride=2, padding=1, output_padding=1),
-            nn.Sigmoid(),
+            nn.Linear(latent_dim, 256),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(256, 512),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(512, 256),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(256, latent_dim),
         )
 
     def forward(self, z):
-        x = self.fc(z)
-        x = x.view(-1, 512, 2, 2)
-        x = self.conv(x)
-        return x
+        return self.fc(z)
 
 
-class Discriminator(nn.Module):
-    """无条件判别器"""
+class LatentDiscriminator(nn.Module):
+    """Latent空间判别器"""
 
-    def __init__(self):
+    def __init__(self, latent_dim=128):
         super().__init__()
 
-        self.conv = nn.Sequential(
-            # 32×32 → 16×16
-            nn.Conv2d(4, 64, kernel_size=3, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.25),
-
-            # 16×16 → 8×8
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),
-            nn.LayerNorm([128, 8, 8]),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.25),
-
-            # 8×8 → 4×4
-            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),
-            nn.LayerNorm([256, 4, 4]),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.25),
-
-            # 4×4 → 2×2
-            nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1),
-            nn.LayerNorm([512, 2, 2]),
-            nn.LeakyReLU(0.2, inplace=True),
-        )
-
         self.fc = nn.Sequential(
-            nn.Linear(512 * 2 * 2, 256),
+            nn.Linear(latent_dim, 256),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(256, 1),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(128, 1),
         )
 
-    def forward(self, img):
-        x = self.conv(img)
-        x = x.view(x.size(0), -1)
-        return self.fc(x)
+    def forward(self, z):
+        return self.fc(z)
 
 
-def gradient_penalty(discriminator, real_images, fake_images, device):
+def gradient_penalty(discriminator, real_z, fake_z, device):
     """计算梯度惩罚"""
-    batch_size = real_images.size(0)
-    alpha = torch.rand(batch_size, 1, 1, 1).to(device)
+    batch_size = real_z.size(0)
+    alpha = torch.rand(batch_size, 1).to(device)
 
-    interpolated = alpha * real_images + (1 - alpha) * fake_images
-    interpolated.requires_grad_(True)
-
+    interpolated = (alpha * real_z + (1 - alpha) * fake_z).requires_grad_(True)
     d_interpolated = discriminator(interpolated)
 
     gradients = torch.autograd.grad(
@@ -194,97 +136,37 @@ def gradient_penalty(discriminator, real_images, fake_images, device):
     return gradient_penalty
 
 
-def get_transforms():
-    """获取数据变换（包含数据增强）"""
-    return transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        # 只做90度整数倍旋转（不产生黑色填充）
-        transforms.RandomChoice([
-            transforms.Lambda(lambda x: x),
-            transforms.Lambda(lambda x: x.rotate(90)),
-            transforms.Lambda(lambda x: x.rotate(180)),
-            transforms.Lambda(lambda x: x.rotate(270)),
-        ]),
-        transforms.ToTensor(),
-    ])
-
-
-def save_samples(generator, device, save_dir, epoch, fixed_noise, num_samples=16):
+def save_samples(generator, autoencoder, device, save_dir, epoch, fixed_noise):
     """保存生成样本"""
+    from torchvision import transforms
+
     generator.eval()
+    autoencoder.eval()
 
     samples_dir = Path(save_dir) / "samples"
     samples_dir.mkdir(parents=True, exist_ok=True)
 
     with torch.no_grad():
-        fake = generator(fixed_noise[:num_samples])
+        # 生成latent vectors
+        fake_z = generator(fixed_noise)
 
-        # 保存单张图片
-        for i in range(num_samples):
-            img = transforms.ToPILImage()(fake[i].cpu())
+        # 用Decoder生成图片
+        fake_images = autoencoder.decode(fake_z)
+
+        # 保存图片
+        for i in range(min(16, len(fixed_noise))):
+            img_tensor = fake_images[i].cpu()
+            img = transforms.ToPILImage()(img_tensor)
             img_large = img.resize((128, 128), Image.Resampling.NEAREST)
             img_large.save(samples_dir / f"epoch_{epoch:03d}_sample_{i:02d}.png")
 
-        # 保存网格图
-        grid_size = int(num_samples ** 0.5)
-        grid_img = Image.new("RGBA", (grid_size * 128, grid_size * 128))
-
-        for i in range(num_samples):
-            img = transforms.ToPILImage()(fake[i].cpu())
-            img_large = img.resize((128, 128), Image.Resampling.NEAREST)
-            row = i // grid_size
-            col = i % grid_size
-            grid_img.paste(img_large, (col * 128, row * 128))
-
-        grid_img.save(samples_dir / f"epoch_{epoch:03d}_grid.png")
-
     generator.train()
-
-
-def create_timeline(save_dir, epochs):
-    """创建时间轴对比图"""
-    samples_dir = Path(save_dir) / "samples"
-
-    # 收集所有grid图
-    grid_images = []
-    for epoch in epochs:
-        grid_path = samples_dir / f"epoch_{epoch:03d}_grid.png"
-        if grid_path.exists():
-            grid_images.append((epoch, Image.open(grid_path)))
-
-    if not grid_images:
-        return
-
-    # 创建时间轴图
-    img_width = grid_images[0][1].width
-    img_height = grid_images[0][1].height
-    padding = 10
-    label_height = 30
-
-    timeline_width = len(grid_images) * (img_width + padding) + padding
-    timeline_height = img_height + label_height + padding * 2
-
-    timeline = Image.new("RGB", (timeline_width, timeline_height), (40, 40, 40))
-
-    from PIL import ImageDraw
-    draw = ImageDraw.Draw(timeline)
-
-    for i, (epoch, img) in enumerate(grid_images):
-        x = padding + i * (img_width + padding)
-        y = label_height + padding
-
-        timeline.paste(img, (x, y))
-        draw.text((x + 10, 5), f"Epoch {epoch}", fill="white")
-
-    timeline.save(save_dir / "timeline.png")
-    print(f"时间轴已保存: {save_dir / 'timeline.png'}")
 
 
 def train():
     """训练函数"""
     print("=" * 60)
-    print("Terrain WGAN-GP 训练 (无条件)")
+    print("Latent Space GAN 训练")
     print("=" * 60)
     print(f"设备: {CONFIG['device']}")
     print(f"Latent维度: {CONFIG['latent_dim']}")
@@ -296,11 +178,9 @@ def train():
     checkpoint_dir = project_root / CONFIG["checkpoint_dir"]
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # 数据变换
-    transform = get_transforms()
-
-    # 加载数据集
-    dataset = TerrainDataset(project_root / CONFIG["data_dir"], transform=transform)
+    # 加载latent数据
+    latent_data_path = project_root / CONFIG["latent_data"]
+    dataset = LatentDataset(latent_data_path)
 
     # 创建数据加载器
     dataloader = DataLoader(
@@ -311,9 +191,21 @@ def train():
         pin_memory=True,
     )
 
-    # 创建模型
-    generator = Generator(latent_dim=CONFIG["latent_dim"]).to(CONFIG["device"])
-    discriminator = Discriminator().to(CONFIG["device"])
+    # 加载AutoEncoder（只用Decoder）
+    ae_checkpoint = torch.load(
+        project_root / CONFIG["autoencoder_checkpoint"],
+        map_location=CONFIG["device"]
+    )
+    ae_config = ae_checkpoint.get("config", {})
+    autoencoder = ResNetAutoEncoder(latent_dim=ae_config.get("latent_dim", 128)).to(CONFIG["device"])
+    autoencoder.load_state_dict(ae_checkpoint["model_state_dict"])
+    autoencoder.eval()
+
+    print(f"\nAutoEncoder加载成功")
+
+    # 创建GAN模型
+    generator = LatentGenerator(latent_dim=CONFIG["latent_dim"]).to(CONFIG["device"])
+    discriminator = LatentDiscriminator(latent_dim=CONFIG["latent_dim"]).to(CONFIG["device"])
 
     # 优化器
     optimizer_g = optim.Adam(
@@ -328,7 +220,7 @@ def train():
         betas=(CONFIG["beta1"], CONFIG["beta2"]),
     )
 
-    # 固定噪声（用于生成样本）
+    # 固定噪声
     fixed_noise = torch.randn(16, CONFIG["latent_dim"]).to(CONFIG["device"])
 
     # 打印模型信息
@@ -357,24 +249,24 @@ def train():
         epoch_gp_loss = 0.0
         num_batches = 0
 
-        for batch_idx, real_images in enumerate(dataloader):
-            batch_size = real_images.size(0)
-            real_images = real_images.to(CONFIG["device"])
+        for batch_idx, real_z in enumerate(dataloader):
+            batch_size = real_z.size(0)
+            real_z = real_z.to(CONFIG["device"])
 
             # ==================== 训练判别器 ====================
             for _ in range(CONFIG["n_critic"]):
                 optimizer_d.zero_grad()
 
-                # 真图片
-                d_real = discriminator(real_images)
+                # 真实latent
+                d_real = discriminator(real_z)
 
-                # 假图片
+                # 假latent
                 z = torch.randn(batch_size, CONFIG["latent_dim"]).to(CONFIG["device"])
-                fake_images = generator(z)
-                d_fake = discriminator(fake_images.detach())
+                fake_z = generator(z)
+                d_fake = discriminator(fake_z.detach())
 
                 # 梯度惩罚
-                gp = gradient_penalty(discriminator, real_images, fake_images.detach(), CONFIG["device"])
+                gp = gradient_penalty(discriminator, real_z, fake_z.detach(), CONFIG["device"])
 
                 # WGAN-GP判别器损失
                 d_loss = d_fake.mean() - d_real.mean() + CONFIG["lambda_gp"] * gp
@@ -385,10 +277,10 @@ def train():
             # ==================== 训练生成器 ====================
             optimizer_g.zero_grad()
 
-            # 假图片
+            # 假latent
             z = torch.randn(batch_size, CONFIG["latent_dim"]).to(CONFIG["device"])
-            fake_images = generator(z)
-            d_fake = discriminator(fake_images)
+            fake_z = generator(z)
+            d_fake = discriminator(fake_z)
 
             # 生成器损失
             g_loss = -d_fake.mean()
@@ -419,11 +311,11 @@ def train():
 
         # 保存样本
         if (epoch + 1) % CONFIG["sample_every"] == 0:
-            save_samples(generator, CONFIG["device"], checkpoint_dir, epoch + 1, fixed_noise)
+            save_samples(generator, autoencoder, CONFIG["device"], checkpoint_dir, epoch + 1, fixed_noise)
 
         # 保存检查点
         if (epoch + 1) % CONFIG["save_every"] == 0:
-            checkpoint_path = checkpoint_dir / f"terrain_wgan_epoch_{epoch+1:03d}.pth"
+            checkpoint_path = checkpoint_dir / f"latent_gan_epoch_{epoch+1:03d}.pth"
             torch.save({
                 "epoch": epoch + 1,
                 "generator_state_dict": generator.state_dict(),
@@ -439,7 +331,7 @@ def train():
         # 保存最佳模型
         if avg_g_loss < best_g_loss:
             best_g_loss = avg_g_loss
-            best_path = checkpoint_dir / "terrain_wgan_best.pth"
+            best_path = checkpoint_dir / "latent_gan_best.pth"
             torch.save({
                 "epoch": epoch + 1,
                 "generator_state_dict": generator.state_dict(),
@@ -452,7 +344,7 @@ def train():
             }, best_path)
 
     # 保存最终模型
-    final_path = checkpoint_dir / "terrain_wgan_final.pth"
+    final_path = checkpoint_dir / "latent_gan_final.pth"
     torch.save({
         "epoch": CONFIG["epochs"],
         "generator_state_dict": generator.state_dict(),
@@ -468,10 +360,6 @@ def train():
     history_path = checkpoint_dir / "training_history.json"
     with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
-
-    # 创建时间轴
-    timeline_epochs = list(range(CONFIG["sample_every"], CONFIG["epochs"] + 1, CONFIG["sample_every"]))
-    create_timeline(checkpoint_dir, timeline_epochs)
 
     # 打印总结
     total_time = time.time() - start_time
