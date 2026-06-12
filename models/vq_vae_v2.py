@@ -89,10 +89,11 @@ class VectorQuantizer(nn.Module):
 
 
 class Encoder(nn.Module):
-    """编码器 (16×16 latent)"""
+    """编码器 (32×32 → latent_size×latent_size)"""
 
-    def __init__(self, in_channels=4, hidden_channels=256, embedding_dim=64):
+    def __init__(self, in_channels=4, hidden_channels=256, embedding_dim=64, latent_size=16):
         super().__init__()
+        self.latent_size = latent_size
 
         self.conv = nn.Sequential(
             # 32×32 → 16×16
@@ -100,6 +101,9 @@ class Encoder(nn.Module):
             nn.GroupNorm(8, hidden_channels // 2),
             nn.ReLU(inplace=True),
         )
+
+        # 16×16 → latent_size×latent_size (仅当 latent_size != 16 时生效)
+        self.pool = nn.AdaptiveAvgPool2d((latent_size, latent_size)) if latent_size != 16 else nn.Identity()
 
         # 残差块
         self.residual = nn.Sequential(
@@ -112,16 +116,18 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         x = self.conv(x)
+        x = self.pool(x)
         x = self.residual(x)
         x = self.output(x)
         return x
 
 
 class Decoder(nn.Module):
-    """解码器 (16×16 → 32×32)"""
+    """解码器 (latent_size×latent_size → 32×32)"""
 
-    def __init__(self, embedding_dim=64, hidden_channels=256, out_channels=4):
+    def __init__(self, embedding_dim=64, hidden_channels=256, out_channels=4, latent_size=16):
         super().__init__()
+        self.latent_size = latent_size
 
         # 输入层
         self.input = nn.Conv2d(embedding_dim, hidden_channels // 2, kernel_size=1)
@@ -141,6 +147,9 @@ class Decoder(nn.Module):
     def forward(self, x):
         x = self.input(x)
         x = self.residual(x)
+        # latent_size×latent_size → 16×16 (仅当 latent_size != 16 时)
+        if self.latent_size != 16:
+            x = F.interpolate(x, size=(16, 16), mode='bilinear', align_corners=False)
         x = self.conv(x)
         return x
 
@@ -149,11 +158,12 @@ class VQVAEv2(nn.Module):
     """VQ-VAE v2 模型"""
 
     def __init__(self, in_channels=4, hidden_channels=256, embedding_dim=64,
-                 num_embeddings=512, commitment_cost=0.25):
+                 num_embeddings=512, commitment_cost=0.25, latent_size=16):
         super().__init__()
+        self.latent_size = latent_size
 
-        self.encoder = Encoder(in_channels, hidden_channels, embedding_dim)
-        self.decoder = Decoder(embedding_dim, hidden_channels, in_channels)
+        self.encoder = Encoder(in_channels, hidden_channels, embedding_dim, latent_size)
+        self.decoder = Decoder(embedding_dim, hidden_channels, in_channels, latent_size)
         self.vq = VectorQuantizer(num_embeddings, embedding_dim, commitment_cost)
 
     def forward(self, x):
@@ -194,37 +204,35 @@ def test_model():
     """测试模型"""
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # 创建模型
-    model = VQVAEv2(
-        in_channels=4,
-        hidden_channels=256,
-        embedding_dim=64,
-        num_embeddings=512,
-    ).to(device)
+    for latent_size in [16, 20]:
+        print(f"\n{'='*40}")
+        print(f"测试 latent_size={latent_size}")
+        print(f"{'='*40}")
 
-    # 测试输入
-    x = torch.randn(4, 4, 32, 32).to(device)
+        model = VQVAEv2(
+            in_channels=4,
+            hidden_channels=256,
+            embedding_dim=64,
+            num_embeddings=512,
+            latent_size=latent_size,
+        ).to(device)
 
-    # 前向传播
-    x_recon, vq_loss, indices = model(x)
+        x = torch.randn(4, 4, 32, 32).to(device)
+        x_recon, vq_loss, indices = model(x)
 
-    print(f"VQ-VAE v2:")
-    print(f"  输入: {x.shape}")
-    print(f"  输出: {x_recon.shape}")
-    print(f"  索引: {indices.shape}")
-    print(f"  VQ损失: {vq_loss.item():.4f}")
-    print(f"  参数量: {sum(p.numel() for p in model.parameters()):,}")
+        print(f"  输入: {x.shape}")
+        print(f"  输出: {x_recon.shape}")
+        print(f"  索引: {indices.shape}")
+        print(f"  VQ损失: {vq_loss.item():.4f}")
+        print(f"  参数量: {sum(p.numel() for p in model.parameters()):,}")
 
-    # 测试编码和解码
-    z_q, indices = model.encode(x)
-    x_recon2 = model.decode(z_q)
-    print(f"\n编码-解码:")
-    print(f"  量化后: {z_q.shape}")
-    print(f"  重建: {x_recon2.shape}")
+        z_q, indices = model.encode(x)
+        x_recon2 = model.decode(z_q)
+        print(f"  量化后: {z_q.shape}")
+        print(f"  重建: {x_recon2.shape}")
 
-    # 码本使用率
-    usage, unique = model.get_codebook_usage(x)
-    print(f"\n码本使用率: {usage:.2%} ({len(unique)}/512)")
+        usage, unique = model.get_codebook_usage(x)
+        print(f"  码本使用率: {usage:.2%} ({len(unique)}/512)")
 
 
 if __name__ == "__main__":

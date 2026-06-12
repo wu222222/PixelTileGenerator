@@ -1,0 +1,12 @@
+{
+  "name": "Dirt",
+  "description": "Earth and dirt terrain",
+  "colors": [
+    "#3a2a1a", "#4a3622", "#5a422a", "#6a4e32",
+    "#7a5a3a", "#8a6642", "#9a724a", "#aa7e52",
+    "#ba8a5a", "#ca9662", "#daa26a",
+    "#2a1a0a", "#3a2612", "#4a321a", "#5a3e22",
+    "#6a4a2a", "#7a5632", "#8a623a", "#9a6e42",
+    "#aa7a4a", "#ba8652", "#ca925a", "#da9e62"
+  ]
+}

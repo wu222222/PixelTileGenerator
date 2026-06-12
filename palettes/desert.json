@@ -1,0 +1,12 @@
+{
+  "name": "Desert",
+  "description": "Sandy desert terrain",
+  "colors": [
+    "#8b6914", "#9c7a1e", "#ad8b28", "#be9c32",
+    "#cfad3c", "#d4b84a", "#d9c358", "#dece66",
+    "#e3d974", "#e8e482", "#f0eca0",
+    "#6b4f0a", "#7c5c12", "#8d691a", "#9e7622",
+    "#af832a", "#c09032", "#d19d3a", "#e2aa42",
+    "#f0bd50", "#f8d060", "#ffe080", "#fff0a0"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "Lava",
+  "description": "Hot lava and magma terrain",
+  "colors": [
+    "#1a0000", "#2a0505", "#3a0a0a", "#4a1010",
+    "#5a1a1a", "#6a2525", "#7a3030", "#8a4040",
+    "#9a5555", "#aa6a6a", "#ba8080",
+    "#ff1a00", "#ff3300", "#ff4d00", "#ff6600",
+    "#ff8000", "#ff9900", "#ffb300", "#ffcc00",
+    "#ffe040", "#fff080", "#ffffc0", "#ffffff"
+  ]
+}

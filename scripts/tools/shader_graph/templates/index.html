@@ -1,0 +1,818 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>PixelTile Shader Graph</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#1a1a1a; color:#ddd; font-family:Arial,sans-serif; overflow:hidden; height:100vh; }
+
+/* 工具栏 */
+.toolbar { background:#2a2a2a; padding:8px 15px; display:flex; gap:10px; align-items:center; border-bottom:1px solid #444; height:44px; }
+.toolbar h1 { font-size:16px; color:#4CAF50; margin-right:20px; }
+.toolbar button { padding:5px 12px; background:#3a3a3a; color:#ddd; border:1px solid #555; border-radius:4px; cursor:pointer; font-size:12px; }
+.toolbar button:hover { background:#4CAF50; color:#fff; }
+.toolbar .sep { width:1px; height:24px; background:#555; }
+
+/* 主布局 */
+.main { display:flex; height:calc(100vh - 44px); }
+
+/* 画布 */
+.canvas-wrap { flex:1; position:relative; overflow:hidden; background:#1a1a1a; }
+canvas { display:block; cursor:crosshair; }
+
+/* 预览面板 */
+.preview-panel { width:260px; background:#222; border-left:1px solid #444; padding:15px; overflow-y:auto; }
+.preview-panel h3 { font-size:13px; color:#888; margin-bottom:10px; }
+.preview-panel img { width:230px; height:230px; image-rendering:pixelated; border:1px solid #444; display:block; margin-bottom:10px; }
+.preview-panel .info { font-size:11px; color:#666; word-break:break-all; }
+
+/* 右键菜单 */
+.ctx-menu { position:fixed; background:#2a2a2a; border:1px solid #555; border-radius:4px; padding:5px 0; z-index:999; display:none; min-width:160px; }
+.ctx-menu .item { padding:6px 15px; cursor:pointer; font-size:13px; }
+.ctx-menu .item:hover { background:#4CAF50; }
+.ctx-menu .sep { height:1px; background:#444; margin:3px 0; }
+.ctx-menu .cat { padding:4px 15px; font-size:11px; color:#888; }
+
+/* 属性面板 */
+.prop-panel { position:absolute; right:270px; top:50px; width:260px; max-height:calc(100vh - 100px); background:#2a2a2a; border:1px solid #555; border-radius:6px; padding:12px; display:none; z-index:100; overflow-y:auto; }
+.prop-panel h4 { font-size:13px; color:#4CAF50; margin-bottom:8px; }
+.prop-panel label { display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px; }
+.prop-panel label .v { color:#4CAF50; font-family:monospace; }
+.prop-panel input[type=range] { width:100%; margin-bottom:8px; }
+.prop-panel select { width:100%; margin-bottom:8px; background:#333; color:#ddd; border:1px solid #555; padding:3px; }
+
+/* 瓦片网格 */
+.tile-grid { display:grid; grid-template-columns:repeat(4,1fr); gap:4px; margin:6px 0; }
+.tile-grid .tile { width:48px; height:48px; image-rendering:pixelated; border:2px solid #444; border-radius:3px; cursor:pointer; transition:border-color .15s; }
+.tile-grid .tile:hover { border-color:#888; }
+.tile-grid .tile.selected { border-color:#4CAF50; box-shadow:0 0 6px #4CAF5088; }
+.tile-page { display:flex; justify-content:space-between; align-items:center; margin:4px 0; }
+.tile-page button { padding:2px 10px; background:#3a3a3a; color:#ddd; border:1px solid #555; border-radius:3px; cursor:pointer; font-size:11px; }
+.tile-page button:hover { background:#4CAF50; }
+.tile-page span { font-size:11px; color:#888; }
+.tile-name { font-size:10px; color:#888; text-align:center; margin-top:2px; word-break:break-all; }
+
+/* 节点状态动画 */
+@keyframes pulse-border { 0%,100%{border-color:#FFD600} 50%{border-color:#FF9800} }
+canvas.cut-mode { cursor:crosshair !important; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+    <h1>PixelTile Shader Graph</h1>
+    <button onclick="executeGraph()">▶ Execute</button>
+    <div class="sep"></div>
+    {% for p in presets %}
+    <button onclick="loadPreset('{{p.id}}')">{{p.name}}</button>
+    {% endfor %}
+    <div class="sep"></div>
+    <button onclick="clearGraph()">Clear</button>
+    <button onclick="exportGraph()">Export JSON</button>
+    <div class="sep"></div>
+    <span style="font-size:11px;color:#666">右键拖拽=裁切连线 | Shift+拖拽=平移</span>
+</div>
+
+<div class="main">
+    <div class="canvas-wrap">
+        <canvas id="canvas"></canvas>
+    </div>
+    <div class="preview-panel">
+        <h3>Preview</h3>
+        <img id="preview-img" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="Preview">
+        <div class="info" id="preview-info">执行图生成纹理</div>
+    </div>
+</div>
+
+<div class="ctx-menu" id="ctx-menu"></div>
+
+<div class="prop-panel" id="prop-panel"></div>
+
+<script>
+// ============================================================
+// 数据
+// ============================================================
+const SCHEMAS = {{ schemas | tojson }};
+const PALETTES = {{ palettes | tojson }};
+
+let nodes = [];
+let edges = [];
+let selectedNode = null;
+let dragging = null;
+let connecting = null;
+let dragOffset = {x:0, y:0};
+let nextId = 1;
+let nodeStatus = {};  // {nodeId: 'running'|'success'|'error'}
+let nodeImages = {};  // {nodeId: base64} 节点输出缩略图
+let cutStart = null;  // 裁切起点 {x, y} (canvas coords)
+let cutEnd = null;    // 裁切当前点
+let cutJustDid = false; // 防止裁切后弹出右键菜单
+let pan = {x:0, y:0};
+let panning = null;
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+    canvas.width = canvas.parentElement.clientWidth;
+    canvas.height = canvas.parentElement.clientHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ============================================================
+// 节点定义
+// ============================================================
+const NODE_COLORS = {
+    generator: '#2d5a2d',
+    process: '#2d4a5a',
+    output: '#5a2d2d',
+};
+
+function getNodeDef(type) { return SCHEMAS[type]; }
+function getNodeColor(type) {
+    const cat = SCHEMAS[type]?.category || 'general';
+    return NODE_COLORS[cat] || '#3a3a3a';
+}
+
+function descHeight(node) {
+    const def = getNodeDef(node.type);
+    return (def?.description || '').split('\n').length * 12 + 4;
+}
+
+function inputSlotY(node, idx) {
+    const headerH = 28;
+    const dH = descHeight(node);
+    const paramH = Object.keys(node.params || {}).length * 22;
+    return node.y + headerH + dH + paramH + 12 + idx * 18;
+}
+
+function outputSlotY(node, idx) {
+    const headerH = 28;
+    const dH = descHeight(node);
+    const paramH = Object.keys(node.params || {}).length * 22;
+    return node.y + headerH + dH + paramH + 12 + idx * 18;
+}
+
+function nodeHeight(node) {
+    const def = getNodeDef(node.type);
+    const nParams = Object.keys(def?.params || {}).length;
+    const nInputs = Object.keys(def?.inputs || {}).length;
+    const nOutputs = Object.keys(def?.outputs || {}).length;
+    const descLines = (def?.description || '').split('\n').length;
+    const hasThumb = nodeImages[node.id] || def?.outputs?.image;
+    return 28 + descLines * 12 + 4 + nParams * 22 + Math.max(nInputs, nOutputs) * 18 + 16 + (hasThumb ? 56 : 0);
+}
+
+// ============================================================
+// 渲染
+// ============================================================
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(pan.x, pan.y);
+
+    // 连线
+    for (const e of edges) {
+        const fromNode = nodes.find(n => n.id === e.from);
+        const toNode = nodes.find(n => n.id === e.to);
+        if (!fromNode || !toNode) continue;
+        const defFrom = getNodeDef(fromNode.type);
+        const defTo = getNodeDef(toNode.type);
+        const outIdx = Object.keys(defFrom.outputs || {}).indexOf(e.outSlot || e.slot);
+        const inIdx = Object.keys(defTo.inputs || {}).indexOf(e.inSlot || e.slot);
+        if (outIdx < 0 || inIdx < 0) continue;
+
+        const x1 = fromNode.x + 180;
+        const y1 = outputSlotY(fromNode, outIdx);
+        const x2 = toNode.x;
+        const y2 = inputSlotY(toNode, inIdx);
+
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.bezierCurveTo(x1+60, y1, x2-60, y2, x2, y2);
+        ctx.strokeStyle = '#4CAF50';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    }
+
+    // 裁切线
+    if (cutStart && cutEnd) {
+        ctx.beginPath();
+        ctx.moveTo(cutStart.x, cutStart.y);
+        ctx.lineTo(cutEnd.x, cutEnd.y);
+        ctx.strokeStyle = '#f44336';
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([6, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    // 节点
+    for (const node of nodes) {
+        const def = getNodeDef(node.type);
+        if (!def) continue;
+        const w = 180;
+        const h = nodeHeight(node);
+        const isSelected = selectedNode === node;
+
+        // 背景
+        ctx.fillStyle = getNodeColor(node.type);
+        const status = nodeStatus[node.id];
+        ctx.strokeStyle = status === 'running' ? '#FFD600' : status === 'success' ? '#4CAF50' : status === 'error' ? '#f44336' : isSelected ? '#4CAF50' : '#555';
+        ctx.lineWidth = (status || isSelected) ? 2.5 : 1;
+        ctx.beginPath();
+        ctx.roundRect(node.x, node.y, w, h, 6);
+        ctx.fill();
+        ctx.stroke();
+
+        // 标题
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px Arial';
+        ctx.fillText(def.name, node.x + 8, node.y + 18);
+
+        // 描述
+        let yy = node.y + 28;
+        ctx.fillStyle = '#777';
+        ctx.font = '9px Arial';
+        for (const line of (def.description || '').split('\n')) {
+            ctx.fillText(line, node.x + 8, yy + 8);
+            yy += 12;
+        }
+        yy += 4;
+
+        // 参数 (内嵌滑杆 + 描述)
+        for (const [pk, pv] of Object.entries(def.params || {})) {
+            const val = node.params?.[pk] ?? pv.default;
+            const label = pv.label || pk;
+            // 参数值
+            ctx.fillStyle = '#ccc';
+            ctx.font = '10px Arial';
+            ctx.fillText(`${label}: ${typeof val === 'number' ? val.toFixed(1) : val}`, node.x + 8, yy + 10);
+            // 参数描述 (灰色小字)
+            if (pv.desc) {
+                ctx.fillStyle = '#666';
+                ctx.font = '8px Arial';
+                ctx.fillText(pv.desc, node.x + 8, yy + 20);
+            }
+            yy += 22;
+        }
+
+        // 输入端口
+        const inputs = Object.keys(def.inputs || {});
+        for (let i = 0; i < inputs.length; i++) {
+            const sy = inputSlotY(node, i);
+            const portR = connecting ? 7 : 5;
+            ctx.beginPath();
+            ctx.arc(node.x, sy, portR, 0, Math.PI * 2);
+            ctx.fillStyle = connecting ? '#66BB6A' : '#4CAF50';
+            ctx.fill();
+            if (connecting) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke(); }
+            ctx.fillStyle = '#ccc';
+            ctx.font = '10px Arial';
+            ctx.fillText(inputs[i], node.x + (connecting ? 12 : 10), sy + 4);
+        }
+
+        // 输出端口
+        const outputs = Object.keys(def.outputs || {});
+        for (let i = 0; i < outputs.length; i++) {
+            const sy = outputSlotY(node, i);
+            ctx.beginPath();
+            ctx.arc(node.x + w, sy, 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#FF9800';
+            ctx.fill();
+            ctx.fillStyle = '#ccc';
+            ctx.font = '10px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillText(outputs[i], node.x + w - 10, sy + 4);
+            ctx.textAlign = 'left';
+        }
+
+        // 节点缩略图
+        const nimg = nodeImages[node.id];
+        if (nimg) {
+            const thumbSize = 48;
+            const tx = node.x + (w - thumbSize) / 2;
+            const ty = node.y + h - thumbSize - 4;
+            ctx.save();
+            ctx.beginPath();
+            ctx.roundRect(tx, ty, thumbSize, thumbSize, 3);
+            ctx.clip();
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(nimg, tx, ty, thumbSize, thumbSize);
+            ctx.restore();
+            ctx.strokeStyle = '#555';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(tx, ty, thumbSize, thumbSize);
+        }
+    }
+
+    ctx.restore();
+}
+
+// ============================================================
+// 交互
+// ============================================================
+function findNodeAt(mx, my) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+        const n = nodes[i];
+        const h = nodeHeight(n);
+        if (mx >= n.x && mx <= n.x + 180 && my >= n.y && my <= n.y + h) return n;
+    }
+    return null;
+}
+
+function findOutputSlot(mx, my) {
+    for (const node of nodes) {
+        const def = getNodeDef(node.type);
+        const outputs = Object.keys(def.outputs || {});
+        for (let i = 0; i < outputs.length; i++) {
+            const sy = outputSlotY(node, i);
+            const sx = node.x + 180;
+            if (Math.hypot(mx - sx, my - sy) < 10) return {node, slot: outputs[i], idx: i};
+        }
+    }
+    return null;
+}
+
+function findInputSlot(mx, my) {
+    for (const node of nodes) {
+        const def = getNodeDef(node.type);
+        const inputs = Object.keys(def.inputs || {});
+        for (let i = 0; i < inputs.length; i++) {
+            const sy = inputSlotY(node, i);
+            const sx = node.x;
+            if (Math.hypot(mx - sx, my - sy) < 10) return {node, slot: inputs[i], idx: i};
+        }
+    }
+    return null;
+}
+
+canvas.addEventListener('mousedown', e => {
+    const mx = e.offsetX - pan.x;
+    const my = e.offsetY - pan.y;
+
+    // Shift+左键 = 平移画布
+    if (e.shiftKey && e.button === 0) {
+        panning = {sx: e.offsetX - pan.x, sy: e.offsetY - pan.y};
+        return;
+    }
+
+    // 检查输出端口 (开始连线)
+    const outSlot = findOutputSlot(mx, my);
+    if (outSlot) {
+        connecting = {fromId: outSlot.node.id, slot: outSlot.slot, mx, my};
+        return;
+    }
+
+    // 检查节点 (拖拽)
+    const node = findNodeAt(mx, my);
+    if (node) {
+        selectedNode = node;
+        dragging = node;
+        dragOffset = {x: mx - node.x, y: my - node.y};
+        showPropPanel(node);
+        draw();
+        return;
+    }
+
+    selectedNode = null;
+    hidePropPanel();
+    draw();
+});
+
+canvas.addEventListener('mousemove', e => {
+    const mx = e.offsetX - pan.x;
+    const my = e.offsetY - pan.y;
+    if (panning) {
+        pan.x = e.offsetX - panning.sx;
+        pan.y = e.offsetY - panning.sy;
+        draw();
+        return;
+    }
+    if (dragging) {
+        dragging.x = mx - dragOffset.x;
+        dragging.y = my - dragOffset.y;
+        draw();
+    }
+    if (connecting) {
+        connecting.mx = mx;
+        connecting.my = my;
+        draw();
+    }
+});
+
+canvas.addEventListener('mouseup', e => {
+    const mx = e.offsetX - pan.x;
+    const my = e.offsetY - pan.y;
+
+    if (panning) { panning = null; return; }
+
+    if (connecting) {
+        const inSlot = findInputSlot(mx, my);
+        if (inSlot && inSlot.node.id !== connecting.fromId) {
+            // 检查数据类型匹配
+            const defFrom = getNodeDef(nodes.find(n => n.id === connecting.fromId).type);
+            const defTo = getNodeDef(inSlot.node.type);
+            const outType = defFrom.outputs[connecting.slot];
+            const inType = defTo.inputs[inSlot.slot];
+            if (outType === inType) {
+                // 移除该输入端口的旧连线
+                edges = edges.filter(e => !(e.to === inSlot.node.id && (e.inSlot || e.slot) === inSlot.slot));
+                edges.push({from: connecting.fromId, to: inSlot.node.id, outSlot: connecting.slot, inSlot: inSlot.slot, slot: inSlot.slot});
+            }
+        }
+        connecting = null;
+        draw();
+    }
+    dragging = null;
+});
+
+// 右键菜单
+canvas.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    if (cutJustDid) { cutJustDid = false; return; }
+    const mx = e.offsetX - pan.x;
+    const my = e.offsetY - pan.y;
+
+    // 检查是否在节点上 (删除)
+    const node = findNodeAt(mx, my);
+    const menu = document.getElementById('ctx-menu');
+    menu.innerHTML = '';
+
+    if (node) {
+        menu.innerHTML += `<div class="item" onclick="deleteNode('${node.id}')">Delete Node</div>`;
+        menu.innerHTML += `<div class="sep"></div>`;
+    }
+
+    // 添加节点菜单
+    const categories = {};
+    for (const [type, schema] of Object.entries(SCHEMAS)) {
+        if (!categories[schema.category]) categories[schema.category] = [];
+        categories[schema.category].push({type, name: schema.name});
+    }
+    for (const [cat, items] of Object.entries(categories)) {
+        menu.innerHTML += `<div class="cat">${cat.toUpperCase()}</div>`;
+        for (const item of items) {
+            menu.innerHTML += `<div class="item" onclick="addNode('${item.type}', ${mx}, ${my})">${item.name}</div>`;
+        }
+    }
+
+    menu.style.left = e.clientX + 'px';
+    menu.style.top = e.clientY + 'px';
+    menu.style.display = 'block';
+});
+
+document.addEventListener('click', () => {
+    document.getElementById('ctx-menu').style.display = 'none';
+});
+
+// 右键拖拽裁切
+canvas.addEventListener('mousedown', e => {
+    if (e.button === 2) {
+        cutStart = {x: e.offsetX - pan.x, y: e.offsetY - pan.y};
+        cutEnd = null;
+    }
+});
+canvas.addEventListener('mousemove', e => {
+    if (e.buttons === 2 && cutStart) {
+        cutEnd = {x: e.offsetX - pan.x, y: e.offsetY - pan.y};
+        draw();
+    }
+});
+canvas.addEventListener('mouseup', e => {
+    if (e.button === 2 && cutStart && cutEnd) {
+        const moved = Math.hypot(cutEnd.x - cutStart.x, cutEnd.y - cutStart.y);
+        if (moved > 10) {
+            const before = edges.length;
+            edges = edges.filter(edge => {
+                const fromNode = nodes.find(n => n.id === edge.from);
+                const toNode = nodes.find(n => n.id === edge.to);
+                if (!fromNode || !toNode) return true;
+                const defFrom = getNodeDef(fromNode.type);
+                const defTo = getNodeDef(toNode.type);
+                const outIdx = Object.keys(defFrom.outputs || {}).indexOf(edge.outSlot || edge.slot);
+                const inIdx = Object.keys(defTo.inputs || {}).indexOf(edge.inSlot || edge.slot);
+                if (outIdx < 0 || inIdx < 0) return true;
+                const x1 = fromNode.x + 180, y1 = outputSlotY(fromNode, outIdx);
+                const x2 = toNode.x, y2 = inputSlotY(toNode, inIdx);
+                return !segmentsIntersect(cutStart.x, cutStart.y, cutEnd.x, cutEnd.y, x1, y1, x2, y2);
+            });
+            if (edges.length < before) { cutJustDid = true; draw(); }
+        }
+        cutStart = null; cutEnd = null;
+        draw();
+    }
+});
+
+// ============================================================
+// 节点操作
+// ============================================================
+function addNode(type, x, y) {
+    const def = getNodeDef(type);
+    const params = {};
+    for (const [k, v] of Object.entries(def.params || {})) {
+        params[k] = v.default;
+    }
+    // Palette 节点特殊处理
+    if (type === 'palette') params.name = 'original';
+    nodes.push({id: 'n' + nextId++, type, x, y, params});
+    draw();
+}
+
+function deleteNode(id) {
+    nodes = nodes.filter(n => n.id !== id);
+    edges = edges.filter(e => e.from !== id && e.to !== id);
+    delete nodeStatus[id];
+    delete nodeImages[id];
+    if (selectedNode?.id === id) { selectedNode = null; hidePropPanel(); }
+    draw();
+}
+
+function clearGraph() {
+    nodes = []; edges = []; selectedNode = null; nextId = 1;
+    nodeStatus = {}; nodeImages = {};
+    hidePropPanel(); draw();
+}
+
+// ============================================================
+// 属性面板
+// ============================================================
+let tileGridPage = 0;
+let tileGridCategory = 'all';
+
+function showPropPanel(node) {
+    const def = getNodeDef(node.type);
+    const panel = document.getElementById('prop-panel');
+    let html = `<h4>${def.name}</h4>`;
+    if (def.description) html += `<div style="font-size:11px;color:#888;margin-bottom:8px">${def.description.replace(/\n/g,'<br>')}</div>`;
+    for (const [pk, pv] of Object.entries(def.params || {})) {
+        const val = node.params?.[pk] ?? pv.default;
+        if (pv.desc) html += `<div style="font-size:10px;color:#666;margin-bottom:1px">${pv.desc}</div>`;
+        if (pv.type === 'slider') {
+            const step = (pv.max - pv.min) / 100;
+            const decimals = pv.integer ? 0 : 1;
+            html += `<label>${pv.label || pk} <span class="v" id="pv-${pk}">${typeof val === 'number' ? val.toFixed(decimals) : val}</span></label>`;
+            html += `<input type="range" min="${pv.min}" max="${pv.max}" step="${step}" value="${val}" oninput="setParam('${node.id}','${pk}',parseFloat(this.value));document.getElementById('pv-${pk}').textContent=parseFloat(this.value).toFixed(${decimals})">`;
+        } else if (pv.type === 'select') {
+            const opts = pk === 'name' ? PALETTES : (pv.options || []);
+            const onChange = node.type === 'base_tile' && pk === 'category'
+                ? `onchange="setParam('${node.id}','${pk}',this.value);tileGridPage=0;tileGridCategory=this.value;loadTileGrid('${node.id}')"`
+                : `onchange="setParam('${node.id}','${pk}',this.value)"`;
+            html += `<label>${pv.label || pk}</label><select ${onChange}>`;
+            for (const opt of opts) {
+                html += `<option value="${opt}" ${opt == val ? 'selected' : ''}>${opt}</option>`;
+            }
+            html += `</select>`;
+        } else if (pv.type === 'number') {
+            const parseFn = pv.integer ? 'parseInt' : 'parseFloat';
+            const step = pv.integer ? 1 : 'any';
+            html += `<label>${pv.label || pk}</label><input type="number" value="${val}" min="${pv.min ?? ''}" max="${pv.max ?? ''}" step="${step}" style="width:100%;margin-bottom:8px;background:#333;color:#ddd;border:1px solid #555;padding:3px" onchange="setParam('${node.id}','${pk}',${parseFn}(this.value))">`;
+        }
+    }
+
+    // BaseTileNode: 瓦片网格预览
+    if (node.type === 'base_tile') {
+        tileGridCategory = node.params?.category || 'all';
+        html += `<div id="tile-grid-container"><div style="font-size:11px;color:#888;margin:6px 0 2px">点击选择瓦片:</div><div class="tile-grid" id="tile-grid"></div>`;
+        html += `<div class="tile-page"><button onclick="tilePrev('${node.id}')">◀ 上一页</button><span id="tile-page-info"></span><button onclick="tileNext('${node.id}')">下一页 ▶</button></div>`;
+        html += `<div class="tile-name" id="tile-selected-name"></div></div>`;
+    }
+
+    panel.innerHTML = html;
+    panel.style.display = 'block';
+
+    // 加载瓦片网格
+    if (node.type === 'base_tile') {
+        tileGridPage = 0;
+        loadTileGrid(node.id);
+    }
+}
+
+function loadTileGrid(nodeId) {
+    const node = nodes.find(n => n.id === nodeId);
+    if (!node) return;
+    const category = tileGridCategory || node.params?.category || 'all';
+    const currentIndex = node.params?.index || 0;
+    fetch(`/api/tiles?category=${category}&page=${tileGridPage}&per_page=20`)
+        .then(r => r.json())
+        .then(data => {
+            const grid = document.getElementById('tile-grid');
+            const info = document.getElementById('tile-page-info');
+            const nameEl = document.getElementById('tile-selected-name');
+            if (!grid) return;
+            const totalPages = Math.ceil(data.total / data.per_page);
+            info.textContent = `${tileGridPage + 1} / ${totalPages} (共${data.total}个)`;
+            grid.innerHTML = '';
+            for (const tile of data.tiles) {
+                const div = document.createElement('div');
+                div.style.cssText = 'display:inline-block;text-align:center;cursor:pointer;';
+                const img = document.createElement('img');
+                img.className = 'tile' + (tile.index === currentIndex ? ' selected' : '');
+                img.src = 'data:image/png;base64,' + tile.thumb;
+                img.title = tile.name;
+                img.onclick = () => {
+                    setParam(nodeId, 'index', tile.index);
+                    document.getElementById('pv-index').textContent = tile.index;
+                    loadTileGrid(nodeId);
+                };
+                div.appendChild(img);
+                grid.appendChild(div);
+            }
+            // 显示当前选中名称
+            if (nameEl) {
+                const sel = data.tiles.find(t => t.index === currentIndex);
+                nameEl.textContent = sel ? `当前: ${sel.name}` : '';
+            }
+        });
+}
+
+function tilePrev(nodeId) { if (tileGridPage > 0) { tileGridPage--; loadTileGrid(nodeId); } }
+function tileNext(nodeId) { tileGridPage++; loadTileGrid(nodeId); }
+
+// ============================================================
+// 裁切辅助
+// ============================================================
+function segmentsIntersect(ax,ay,bx,by,cx,cy,dx,dy) {
+    function cross(ox,oy,ax,ay,bx,by){return(ax-ox)*(by-oy)-(ay-oy)*(bx-ox);}
+    const d1=cross(cx,cy,dx,dy,ax,ay),d2=cross(cx,cy,dx,dy,bx,by);
+    const d3=cross(ax,ay,bx,by,cx,cy),d4=cross(ax,ay,bx,by,dx,dy);
+    if(((d1>0&&d2<0)||(d1<0&&d2>0))&&((d3>0&&d4<0)||(d3<0&&d4>0)))return true;
+    if(d1===0&&onSeg(cx,cy,dx,dy,ax,ay))return true;
+    if(d2===0&&onSeg(cx,cy,dx,dy,bx,by))return true;
+    if(d3===0&&onSeg(ax,ay,bx,by,cx,cy))return true;
+    if(d4===0&&onSeg(ax,ay,bx,by,dx,dy))return true;
+    return false;
+}
+function onSeg(ax,ay,bx,by,px,py){return px>=Math.min(ax,bx)&&px<=Math.max(ax,bx)&&py>=Math.min(ay,by)&&py<=Math.max(ay,by);}
+
+// ============================================================
+// 生成器节点预览
+// ============================================================
+function previewGenerator(node) {
+    const def = getNodeDef(node.type);
+    if (!def?.outputs?.latent) return;
+    const prevId = '__preview_decode';
+    const prevOutId = '__preview_out';
+    const miniGraph = {
+        nodes: [
+            {id: node.id, type: node.type, params: node.params},
+            {id: prevId, type: 'decode', params: {}},
+            {id: prevOutId, type: 'output', params: {label: 'preview'}},
+        ],
+        edges: [
+            {from: node.id, to: prevId, slot: 'latent'},
+            {from: prevId, to: prevOutId, slot: 'image'},
+        ],
+    };
+    fetch('/api/preview', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(miniGraph),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success && data.image) {
+            const img = new Image();
+            img.onload = () => { nodeImages[node.id] = img; draw(); };
+            img.src = 'data:image/png;base64,' + data.image;
+        }
+    }).catch(()=>{});
+}
+
+function hidePropPanel() {
+    document.getElementById('prop-panel').style.display = 'none';
+}
+
+function setParam(nodeId, key, value) {
+    const node = nodes.find(n => n.id === nodeId);
+    if (node) {
+        node.params[key] = value;
+        draw();
+        autoExecute();
+        const def = getNodeDef(node.type);
+        if (def?.outputs?.latent && !def?.inputs?.image && !def?.inputs?.latent) {
+            clearTimeout(previewTimer);
+            previewTimer = setTimeout(() => previewGenerator(node), 400);
+        }
+    }
+}
+
+// ============================================================
+// 自动执行 (debounced)
+// ============================================================
+let autoExecTimer = null;
+let previewTimer = null;
+function autoExecute() {
+    clearTimeout(autoExecTimer);
+    autoExecTimer = setTimeout(() => executeGraph(), 300);
+}
+
+// ============================================================
+// 执行
+// ============================================================
+function executeGraph() {
+    const graph = {nodes: nodes.map(n => ({id: n.id, type: n.type, params: n.params})), edges};
+    document.getElementById('preview-info').textContent = '执行中...';
+
+    // 设置所有节点为 running 状态
+    nodeStatus = {};
+    for (const n of nodes) nodeStatus[n.id] = 'running';
+    draw();
+
+    fetch('/api/execute', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(graph),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            // 更新节点状态和缩略图
+            for (const n of nodes) nodeStatus[n.id] = 'success';
+            // 加载输出图片到节点缩略图
+            for (const [nid, b64] of Object.entries(data.images || {})) {
+                const img = new Image();
+                img.onload = () => { nodeImages[nid] = img; draw(); };
+                img.src = 'data:image/png;base64,' + b64;
+            }
+            // 预览面板
+            const ids = Object.keys(data.images);
+            if (ids.length > 0) {
+                document.getElementById('preview-img').src = 'data:image/png;base64,' + data.images[ids[0]];
+                document.getElementById('preview-info').textContent = `输出: ${ids.join(', ')}`;
+            }
+            draw();
+            // 2秒后清除状态
+            setTimeout(() => { nodeStatus = {}; draw(); }, 2000);
+        } else {
+            for (const n of nodes) nodeStatus[n.id] = 'error';
+            draw();
+            document.getElementById('preview-info').textContent = 'Error: ' + data.error;
+            setTimeout(() => { nodeStatus = {}; draw(); }, 3000);
+        }
+    })
+    .catch(err => {
+        for (const n of nodes) nodeStatus[n.id] = 'error';
+        draw();
+        document.getElementById('preview-info').textContent = 'Error: ' + err;
+        setTimeout(() => { nodeStatus = {}; draw(); }, 3000);
+    });
+}
+
+// ============================================================
+// 预设
+// ============================================================
+function loadPreset(name) {
+    fetch('/api/preset/' + name)
+        .then(r => r.json())
+        .then(graph => {
+            nodes = (graph.nodes || []).map(n => ({...n, params: n.params || {}}));
+            edges = (graph.edges || []).map(e => {
+                if (e.outSlot && e.inSlot) return e;
+                const fromNode = nodes.find(n => n.id === e.from);
+                const toNode = nodes.find(n => n.id === e.to);
+                if (!fromNode || !toNode) return e;
+                const defFrom = getNodeDef(fromNode.type);
+                const defTo = getNodeDef(toNode.type);
+                let outSlot = e.outSlot, inSlot = e.inSlot;
+                if (!outSlot) {
+                    const okeys = Object.keys(defFrom?.outputs || {});
+                    const ikeys = Object.keys(defTo?.inputs || {});
+                    const slotType = defTo?.inputs?.[e.slot];
+                    outSlot = okeys.find(k => defFrom.outputs[k] === slotType) || okeys[0] || e.slot;
+                    inSlot = e.inSlot || e.slot;
+                }
+                return {...e, outSlot, inSlot};
+            });
+            nextId = nodes.length + 1;
+            selectedNode = null;
+            nodeStatus = {}; nodeImages = {};
+            hidePropPanel();
+            draw();
+            executeGraph();
+            for (const n of nodes) {
+                const def = getNodeDef(n.type);
+                if (def?.outputs?.latent && !def?.inputs?.image && !def?.inputs?.latent) {
+                    previewGenerator(n);
+                }
+            }
+        });
+}
+
+function exportGraph() {
+    const graph = {nodes: nodes.map(n => ({id: n.id, type: n.type, params: n.params, x: n.x, y: n.y})), edges};
+    const blob = new Blob([JSON.stringify(graph, null, 2)], {type: 'application/json'});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'shader_graph.json';
+    a.click();
+}
+
+// 初始渲染
+draw();
+</script>
+</body>
+</html>

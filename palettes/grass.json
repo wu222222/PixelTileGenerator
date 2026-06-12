@@ -1,0 +1,12 @@
+{
+  "name": "Grass",
+  "description": "Classic green grass terrain",
+  "colors": [
+    "#1a3a1a", "#1e4d1e", "#236b23", "#2c6b2f",
+    "#3a7f35", "#4e9940", "#5aad4a", "#6ec46e",
+    "#8fdf8f", "#b5efb5", "#d9ffd9",
+    "#0f2d0f", "#153b15", "#1d5c1d", "#287028",
+    "#348534", "#459a45", "#5cb85c", "#78d178",
+    "#9ae69a", "#bff0bf", "#e0ffe0"
+  ]
+}

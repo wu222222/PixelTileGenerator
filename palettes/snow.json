@@ -1,0 +1,12 @@
+{
+  "name": "Snow",
+  "description": "Frozen snow terrain",
+  "colors": [
+    "#8899aa", "#99aabb", "#aabbcc", "#bbccdd",
+    "#ccddee", "#ddeeff", "#e8f0f8", "#f0f5fa",
+    "#f5f8fc", "#f8fbfe", "#ffffff",
+    "#778899", "#8899aa", "#9aabbf", "#afc0d4",
+    "#c4d5e8", "#d9eafc", "#e4f0ff", "#eaf4ff",
+    "#f0f8ff", "#f5fbff", "#fafdff", "#f0e8f0"
+  ]
+}

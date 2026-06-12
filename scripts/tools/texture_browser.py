@@ -25,6 +25,7 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from models.vq_vae_v2 import VQVAEv2
+from scripts.tools.palette_remapper import list_palettes, apply_palette
 
 
 # 配置
@@ -44,11 +45,12 @@ vqvae = None
 pca = None
 latents_pca = None
 names = None
+latent_size = 16  # 从 checkpoint config 动态读取
 
 
 def load_models():
     """加载模型"""
-    global vqvae, pca, latents_pca, names
+    global vqvae, pca, latents_pca, names, latent_size
 
     # 加载VQ-VAE
     checkpoint_path = project_root / CONFIG["vqvae_checkpoint"]
@@ -56,11 +58,15 @@ def load_models():
     checkpoint = torch.load(checkpoint_path, map_location=CONFIG["device"])
     config = checkpoint.get("config", {})
 
+    latent_size = config.get("latent_size", 16)
+    print(f"Latent大小: {latent_size}×{latent_size}")
+
     vqvae = VQVAEv2(
         in_channels=config.get("in_channels", 4),
         hidden_channels=config.get("hidden_channels", 256),
         embedding_dim=config.get("embedding_dim", 64),
         num_embeddings=config.get("num_embeddings", 256),
+        latent_size=latent_size,
     ).to(CONFIG["device"])
 
     vqvae.load_state_dict(checkpoint["model_state_dict"])
@@ -84,7 +90,7 @@ def load_models():
     print(f"加载完成: {len(names)} 个样本")
 
 
-def generate_texture(base_idx, sigma, seed=None):
+def generate_texture(base_idx, sigma, seed=None, palette=None, intensity=1.0, saturation=1.0):
     """生成纹理"""
     if seed is not None:
         np.random.seed(seed)
@@ -102,7 +108,7 @@ def generate_texture(base_idx, sigma, seed=None):
 
     # 逆PCA
     z_new = pca.inverse_transform(z_pca_new.reshape(1, -1))
-    z_new = z_new.reshape(1, 64, 16, 16)
+    z_new = z_new.reshape(1, 64, latent_size, latent_size)
 
     # 用Decoder生成图片
     z_tensor = torch.FloatTensor(z_new).to(CONFIG["device"])
@@ -118,7 +124,13 @@ def generate_texture(base_idx, sigma, seed=None):
     else:
         img_quantized = img_pil.quantize(colors=32, method=Image.Quantize.MEDIANCUT)
 
-    return img_quantized.convert("RGBA"), used_seed
+    result = img_quantized.convert("RGBA")
+
+    # 应用调色板
+    if palette and palette != "original":
+        result = apply_palette(result, palette, intensity, saturation)
+
+    return result, used_seed
 
 
 # HTML模板
@@ -186,6 +198,23 @@ HTML_TEMPLATE = """
             <label>&nbsp;</label>
             <button onclick="saveCurrent()">保存当前</button>
         </div>
+        <div class="control-group">
+            <label>调色板 (Palette)</label>
+            <select id="palette" onchange="updatePreview()">
+                <option value="original">原始调色板</option>
+                {% for p in palettes %}
+                <option value="{{p.id}}">{{p.name}} - {{p.description}}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="control-group">
+            <label>调色板强度: <span id="intensity-value">1.0</span></label>
+            <input type="range" id="intensity" min="0" max="1" step="0.05" value="1.0" onchange="updateIntensity(); updatePreview()">
+        </div>
+        <div class="control-group">
+            <label>饱和度: <span id="saturation-value">1.0</span></label>
+            <input type="range" id="saturation" min="0" max="2" step="0.05" value="1.0" onchange="updateSaturation(); updatePreview()">
+        </div>
     </div>
 
     <div class="preview">
@@ -213,40 +242,59 @@ HTML_TEMPLATE = """
             document.getElementById('current-sigma').textContent = sigma;
         }
 
+        function updateIntensity() {
+            document.getElementById('intensity-value').textContent = document.getElementById('intensity').value;
+        }
+
+        function updateSaturation() {
+            document.getElementById('saturation-value').textContent = document.getElementById('saturation').value;
+        }
+
         function selectSample(index) {
-            // 取消之前的选中
             document.querySelectorAll('.sample-item').forEach(item => {
                 item.style.borderColor = 'transparent';
             });
-
-            // 选中当前
             const item = document.querySelector(`.sample-item[data-index="${index}"]`);
             item.style.borderColor = '#4CAF50';
-
             selectedSample = index;
             document.getElementById('selected-name').textContent = item.querySelector('img').title;
             updatePreview();
         }
 
+        function getParams() {
+            return {
+                sigma: document.getElementById('sigma').value,
+                seed: document.getElementById('seed').value,
+                palette: document.getElementById('palette').value,
+                intensity: document.getElementById('intensity').value,
+                saturation: document.getElementById('saturation').value,
+            };
+        }
+
         function updatePreview() {
-            const sigma = document.getElementById('sigma').value;
-            const seed = document.getElementById('seed').value;
-
-            let url = `/preview?base=${selectedSample}&sigma=${sigma}`;
-            if (seed) url += `&seed=${seed}`;
-
+            const p = getParams();
+            let url = `/preview?base=${selectedSample}&sigma=${p.sigma}`;
+            if (p.seed) url += `&seed=${p.seed}`;
+            if (p.palette !== 'original') {
+                url += `&palette=${p.palette}&intensity=${p.intensity}&saturation=${p.saturation}`;
+            }
             document.getElementById('preview-img').src = url;
             document.getElementById('base-name').textContent = document.getElementById('selected-name').textContent;
         }
 
         function generateBatch() {
-            const sigma = document.getElementById('sigma').value;
-
-            // 每次点击都生成新的随机种子
+            const p = getParams();
             fetch('/generate_batch', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({base: selectedSample, sigma: parseFloat(sigma), count: 4})
+                body: JSON.stringify({
+                    base: selectedSample,
+                    sigma: parseFloat(p.sigma),
+                    count: 4,
+                    palette: p.palette,
+                    intensity: parseFloat(p.intensity),
+                    saturation: parseFloat(p.saturation)
+                })
             })
             .then(response => response.json())
             .then(data => {
@@ -258,7 +306,6 @@ HTML_TEMPLATE = """
                     imgEl.title = `Seed: ${img.seed}`;
                     imgEl.onclick = function() {
                         document.getElementById('preview-img').src = this.src;
-                        // 更新种子显示
                         document.getElementById('seed').value = img.seed;
                     };
                     grid.appendChild(imgEl);
@@ -282,10 +329,12 @@ HTML_TEMPLATE = """
 @app.route('/')
 def index():
     """主页"""
+    palettes = list_palettes()
     return render_template_string(
         HTML_TEMPLATE,
         num_samples=len(names),
         names=names,
+        palettes=palettes,
     )
 
 
@@ -295,8 +344,11 @@ def preview():
     base_idx = request.args.get('base', 0, type=int)
     sigma = request.args.get('sigma', 0.5, type=float)
     seed = request.args.get('seed', None, type=int)
+    palette = request.args.get('palette', None, type=str)
+    intensity = request.args.get('intensity', 1.0, type=float)
+    saturation = request.args.get('saturation', 1.0, type=float)
 
-    img, used_seed = generate_texture(base_idx, sigma, seed)
+    img, used_seed = generate_texture(base_idx, sigma, seed, palette, intensity, saturation)
 
     # 转换为bytes
     img_io = BytesIO()
@@ -313,6 +365,9 @@ def generate_batch():
     base_idx = data.get('base', 0)
     sigma = data.get('sigma', 0.5)
     count = data.get('count', 4)
+    palette = data.get('palette', None)
+    intensity = data.get('intensity', 1.0)
+    saturation = data.get('saturation', 1.0)
 
     # 创建输出目录
     output_dir = project_root / CONFIG["output_dir"]
@@ -320,10 +375,12 @@ def generate_batch():
 
     images = []
     for i in range(count):
-        img, used_seed = generate_texture(base_idx, sigma)
+        img, used_seed = generate_texture(base_idx, sigma, palette=palette,
+                                          intensity=intensity, saturation=saturation)
 
         # 保存
-        filename = f"texture_{base_idx}_{sigma}_{used_seed}.png"
+        pal_suffix = f"_{palette}" if palette and palette != "original" else ""
+        filename = f"texture_{base_idx}_{sigma}_{used_seed}{pal_suffix}.png"
         img.save(output_dir / filename)
 
         images.append({"filename": filename, "seed": used_seed})
@@ -347,7 +404,7 @@ def thumbnail(base_idx):
     # 用原始latent生成缩略图
     z_original = latents_pca[base_idx]
     z_new = pca.inverse_transform(z_original.reshape(1, -1))
-    z_new = z_new.reshape(1, 64, 16, 16)
+    z_new = z_new.reshape(1, 64, latent_size, latent_size)
 
     z_tensor = torch.FloatTensor(z_new).to(CONFIG["device"])
     with torch.no_grad():
