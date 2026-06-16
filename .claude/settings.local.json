@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(conda run *)",
-      "Bash(git -C \"F:/PY/PixelTileGAN\" log --oneline -10)",
-      "Bash(python -c ' *)"
-    ]
-  }
-}
