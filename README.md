@@ -1,4 +1,4 @@
-# PixelTileGAN
+# PixelTileGenerator
 
 基于 VQ-VAE 的 64×64 像素画地形贴图生成系统。
 
