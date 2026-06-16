@@ -4,3 +4,7 @@ checkpoints/
 generated_textures/
 .claude/
 .mimocode/
+*.egg-info/
+dist/
+build/
+.env
