@@ -22,7 +22,7 @@ from io import BytesIO
 CONFIG = {
     "project_root": Path(__file__).parent.parent.parent,
     "input_dir": "datasets/classified/spritesheet",
-    "output_dir": "datasets/classified/pixel_32",
+    "output_dir": "datasets/classified/pixel_64",
     "port": 5001,
 }
 
@@ -211,7 +211,7 @@ def api_resize():
     """resize图片"""
     data = request.json
     image_id = data.get('index')
-    size = data.get('size', 32)
+    size = data.get('size', 64)
 
     if image_id >= len(images):
         return jsonify({"error": "图片不存在"})
@@ -335,7 +335,7 @@ def api_split():
     """切分图片"""
     data = request.json
     image_id = data.get('index')
-    tile_size = data.get('tile_size', 32)
+    tile_size = data.get('tile_size', 64)
 
     if image_id >= len(images):
         return jsonify({"error": "图片不存在"})
@@ -389,7 +389,7 @@ def api_finish():
     image_id = data.get('index')
     operations = data.get('operations', [])
     selected_tile_ids = set(data.get('selected_tiles', []))
-    tile_size = data.get('tile_size', 32)
+    tile_size = data.get('tile_size', 64)
 
     if image_id >= len(images):
         return jsonify({"error": "图片不存在"})

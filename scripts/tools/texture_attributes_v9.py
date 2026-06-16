@@ -1,15 +1,15 @@
 """
-Texture Attribute Space 挖掘
+Texture Attribute Space 挖掘 (v9 适配)
 
-为每个样本计算连续属性:
-1. Structure Score: 边缘能量 (规则结构 vs 随机纹理)
+为 64x64 像素画瓦片计算纹理属性:
+1. Structure Score: 边缘能量
 2. Entropy Score: 纹理随机性
 3. Edge Density: 边缘密度
 4. Color Variance: 颜色方差
 5. Brightness: 平均亮度
-6. Periodicity: 周期性强度 (FFT分析)
+6. Periodicity: 周期性强度 (FFT)
 
-然后基于属性重新聚类，替代 tileset 标签
+然后基于属性聚类 + 保存标准化参数 (供 attribute_generator 使用)
 """
 
 import sys
@@ -28,15 +28,13 @@ from sklearn.preprocessing import StandardScaler
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-OUTPUT_DIR = project_root / "checkpoints" / "v7_attribute_space"
+OUTPUT_DIR = project_root / "checkpoints" / "v9_attribute_space"
 
 STRUCTURE_TYPES = ["flat", "grass", "ice", "rock"]
 
 
 def name_structure_types(profiles):
-    """
-    基于排名 + 色相的结构类型命名 (4类: flat/grass/ice/rock)
-    """
+    """基于排名 + 色相的结构类型命名 (4类: flat/grass/ice/rock)"""
     n = len(profiles)
     names = [""] * n
 
@@ -47,19 +45,16 @@ def name_structure_types(profiles):
 
     r_struct = rank("structure", reverse=True)
 
-    # 1. 绿色高饱和 → grass
     for i in range(n):
         if profiles[i]["green_ratio"] > 0.5:
             names[i] = "grass"
             break
 
-    # 2. 最低结构 → flat
     flat_score = [(i, (n - 1 - r_struct[i])) for i in range(n) if not names[i]]
     if flat_score:
         flat_score.sort(key=lambda x: x[1])
         names[flat_score[0][0]] = "flat"
 
-    # 3. 剩余两个: 冷色高结构 → ice, 暖色高结构 → rock
     remaining = [i for i in range(n) if not names[i]]
     if len(remaining) >= 2:
         a, b = remaining[0], remaining[1]
@@ -81,19 +76,16 @@ def compute_attributes(img_array):
 
     Args:
         img_array: (H, W, 4) RGBA uint8
-
     Returns:
         dict of attributes
     """
     rgb = img_array[:, :, :3].astype(float)
     gray = rgb.mean(axis=2)
 
-    # 1. Structure Score: Sobel 边缘能量
     gx = np.abs(np.diff(gray, axis=1))
     gy = np.abs(np.diff(gray, axis=0))
     edge_energy = float(gx.mean() + gy.mean())
 
-    # 2. Edge Density: 边缘像素占比 (阈值化)
     edge_mag = np.sqrt(
         np.pad(gx, ((0, 0), (0, 1))) ** 2 +
         np.pad(gy, ((0, 1), (0, 0))) ** 2
@@ -101,18 +93,13 @@ def compute_attributes(img_array):
     edge_threshold = edge_mag.mean() + edge_mag.std()
     edge_density = float((edge_mag > edge_threshold).mean())
 
-    # 3. Entropy: 灰度直方图熵
     hist, _ = np.histogram(gray, bins=32, range=(0, 256))
     hist = hist / (hist.sum() + 1e-8)
     entropy = float(-np.sum(hist * np.log2(hist + 1e-10)))
 
-    # 4. Color Variance: RGB 各通道方差的平均
     color_var = float(np.mean([rgb[:, :, c].var() for c in range(3)]))
-
-    # 5. Brightness: 平均亮度
     brightness = float(gray.mean())
 
-    # 6. Periodicity: FFT 周期性
     fft = np.fft.fft2(gray)
     fft_shift = np.fft.fftshift(fft)
     magnitude = np.abs(fft_shift)
@@ -120,24 +107,18 @@ def compute_attributes(img_array):
     cy, cx = h // 2, w // 2
     Y, X = np.ogrid[:h, :w]
     r = np.sqrt((Y - cy) ** 2 + (X - cx) ** 2)
-    # 中心区域 vs 外圈
     inner = magnitude[r < min(h, w) // 4].mean()
     outer = magnitude[r >= min(h, w) // 4].mean()
     periodicity = float(inner / (outer + 1e-8))
 
-    # 7. Local Contrast: 局部对比度
     local_std = float(np.std(gray))
-
-    # 8. Color Count: 唯一颜色数
     unique_colors = len(np.unique(img_array.reshape(-1, 4), axis=0))
 
-    # 色彩属性
     r, g, b_ch = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
     max_c = np.maximum(np.maximum(r, g), b_ch)
     min_c = np.minimum(np.minimum(r, g), b_ch)
     delta = max_c - min_c + 1e-8
 
-    # Hue (简化计算, 0-360)
     hue = np.zeros_like(r)
     mask_r = max_c == r
     mask_g = max_c == g
@@ -146,14 +127,11 @@ def compute_attributes(img_array):
     hue[mask_g] = 60 * ((b_ch[mask_g] - r[mask_g]) / delta[mask_g] + 2)
     hue[mask_b] = 60 * ((r[mask_b] - g[mask_b]) / delta[mask_b] + 4)
 
-    # Saturation
     sat = np.where(max_c > 0, delta / (max_c + 1e-8), 0)
 
-    # 色相统计 (排除灰度像素)
     non_gray = delta > 10
     hue_mean = float(hue[non_gray].mean()) if non_gray.sum() > 0 else 0.0
 
-    # 色相直方图众数
     if non_gray.sum() > 10:
         hue_hist, _ = np.histogram(hue[non_gray], bins=36, range=(0, 360))
         hue_dominant = float((np.argmax(hue_hist) * 10 + 5))
@@ -161,10 +139,7 @@ def compute_attributes(img_array):
         hue_dominant = 0.0
 
     sat_mean = float(sat.mean())
-
-    # 绿色像素占比 (hue 60-180)
     green_ratio = float(((hue > 60) & (hue < 180) & non_gray).mean())
-    # 暖色像素占比 (hue 0-60 或 300-360)
     warm_ratio = float(((hue < 60) | (hue > 300)).mean())
 
     return {
@@ -186,13 +161,13 @@ def compute_attributes(img_array):
 
 def main():
     print("=" * 60)
-    print("Texture Attribute Space 挖掘")
+    print("Texture Attribute Space 挖掘 (v9)")
     print("=" * 60)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 加载图片
-    data_dir = project_root / "datasets" / "classified" / "pixel_32_quantized"
+    # 加载图片 (64x64)
+    data_dir = project_root / "datasets" / "classified" / "pixel_64_quantized"
     image_extensions = {".png", ".jpg", ".jpeg", ".gif", ".bmp"}
     image_files = sorted([
         f for f in data_dir.iterdir()
@@ -201,9 +176,8 @@ def main():
     print(f"加载 {len(image_files)} 张图片")
 
     # 加载原始标签
-    latent_dir = project_root / "datasets" / "vqvae_latent_data_v7"
+    latent_dir = project_root / "datasets" / "vqvae_v9_zq_data"
     latent_names = json.load(open(latent_dir / "names.json"))
-    latents = np.load(latent_dir / "latents.npy")
 
     def get_category(name):
         stem = Path(name).stem
@@ -220,10 +194,9 @@ def main():
         attrs = compute_attributes(img)
         all_attrs.append(attrs)
         all_names.append(img_path.name)
-        if (i + 1) % 500 == 0:
+        if (i + 1) % 200 == 0:
             print(f"  {i+1}/{len(image_files)}")
 
-    # 转为矩阵
     attr_keys = list(all_attrs[0].keys())
     attr_matrix = np.array([[a[k] for k in attr_keys] for a in all_attrs])
     print(f"属性矩阵: {attr_matrix.shape} ({len(attr_keys)} 属性)")
@@ -232,15 +205,16 @@ def main():
     scaler = StandardScaler()
     attr_scaled = scaler.fit_transform(attr_matrix)
 
-    # 基于属性的 KMeans 聚类
+    # 原始标签
+    orig_labels = [get_category(n) for n in all_names]
+    all_orig_cats = sorted(set(orig_labels))
+
+    # KMeans 聚类 (k=8)
     print("\n基于属性空间的 KMeans 聚类 (k=8)...")
     kmeans_attr = KMeans(n_clusters=8, random_state=42, n_init=10)
     attr_labels = kmeans_attr.fit_predict(attr_scaled)
 
-    # 原始标签
-    orig_labels = [get_category(n) for n in all_names]
-
-    # 对比: 原始标签 vs 属性聚类
+    # 交叉表
     print("\n" + "=" * 80)
     print("属性聚类 vs 原始标签 交叉表")
     print("=" * 80)
@@ -250,8 +224,6 @@ def main():
     for i in range(len(all_names)):
         cross_table[attr_labels[i]][orig_labels[i]] += 1
 
-    # 打印交叉表
-    all_orig_cats = sorted(set(orig_labels))
     header = f"{'Cluster':>8} " + " ".join(f"{c:>10}" for c in all_orig_cats) + f" {'Total':>6}"
     print(header)
     print("-" * len(header))
@@ -266,7 +238,7 @@ def main():
         row += f"{total:>6}"
         print(row)
 
-    # 每个属性聚类簇的特征
+    # 每个簇的特征
     print("\n" + "=" * 80)
     print("属性聚类簇特征")
     print("=" * 80)
@@ -278,7 +250,6 @@ def main():
         for j, key in enumerate(attr_keys):
             vals = attr_matrix[mask, j]
             profile[key] = float(vals.mean())
-        # 主要原始标签
         cats = defaultdict(int)
         for i in np.where(mask)[0]:
             cats[orig_labels[i]] += 1
@@ -293,19 +264,16 @@ def main():
         for key in attr_keys:
             print(f"  {key:16s}: {p[key]:.3f}")
 
-    # 给每个簇命名 (基于属性)
+    # 语义命名
     print("\n" + "=" * 80)
     print("属性驱动的语义命名")
     print("=" * 80)
 
     def name_cluster(profile):
-        """根据属性值给簇起语义名"""
         s = profile["structure"]
         e = profile["entropy"]
         b = profile["brightness"]
         p = profile["periodicity"]
-
-        # 规则性
         if s > 25 and p > 2.5:
             base = "Brick"
         elif s > 20:
@@ -320,33 +288,28 @@ def main():
             base = "Dark"
         else:
             base = "Mixed"
-
-        # 颜色倾向
         if profile["color_variance"] > 3000:
             base += "-Colorful"
         elif profile["color_variance"] < 1000:
             base += "-Muted"
-
         return base
 
     for p in cluster_profiles:
         semantic_name = name_cluster(p)
         print(f"  C{p['id']:2d} → {semantic_name:20s} (原: {p['primary_label']}, n={p['size']})")
 
-    # 可视化: 属性空间的 PCA 2D
+    # 可视化
     print("\n生成可视化...")
     pca2d = PCA(n_components=2)
     attr_2d = pca2d.fit_transform(attr_scaled)
 
     fig, axes = plt.subplots(2, 3, figsize=(18, 12))
 
-    # 1. 属性聚类着色
     scatter = axes[0, 0].scatter(attr_2d[:, 0], attr_2d[:, 1], c=attr_labels, cmap='tab10', s=8, alpha=0.6)
     axes[0, 0].set_title("Attribute Clusters")
     axes[0, 0].set_xlabel("PC1")
     axes[0, 0].set_ylabel("PC2")
 
-    # 2. 原始标签着色
     cat_to_int = {cat: i for i, cat in enumerate(all_orig_cats)}
     orig_ints = [cat_to_int[c] for c in orig_labels]
     axes[0, 1].scatter(attr_2d[:, 0], attr_2d[:, 1], c=orig_ints, cmap='tab10', s=8, alpha=0.6)
@@ -354,7 +317,6 @@ def main():
     axes[0, 1].set_xlabel("PC1")
     axes[0, 1].set_ylabel("PC2")
 
-    # 3-8. 各属性着色
     attr_display = [
         ("structure", "Structure"),
         ("entropy", "Entropy"),
@@ -375,12 +337,11 @@ def main():
             axes[row, col].set_ylabel("PC2")
             plt.colorbar(sc, ax=axes[row, col])
 
-    plt.suptitle("Texture Attribute Space — PixelTileGAN v7", fontsize=14)
+    plt.suptitle("Texture Attribute Space — PixelTileGAN v9 (64x64)", fontsize=14)
     plt.tight_layout()
-    save_path = OUTPUT_DIR / "attribute_space.png"
-    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.savefig(OUTPUT_DIR / "attribute_space.png", dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"属性空间图: {save_path}")
+    print(f"属性空间图: {OUTPUT_DIR / 'attribute_space.png'}")
 
     # 保存属性数据
     attr_data = {
@@ -392,7 +353,6 @@ def main():
     with open(OUTPUT_DIR / "attributes.json", "w") as f:
         json.dump(attr_data, f, indent=2)
 
-    # 保存标准化器参数
     scaler_params = {
         "mean": scaler.mean_.tolist(),
         "scale": scaler.scale_.tolist(),
@@ -403,14 +363,13 @@ def main():
 
     print(f"属性数据: {OUTPUT_DIR / 'attributes.json'}")
 
-    # 结构类型聚类 (k=4, 映射到语义类型: flat/organic/brick/rock)
+    # 结构类型聚类 (k=4)
     print("\n" + "=" * 60)
     print("结构类型聚类 (k=4)")
     print("=" * 60)
     kmeans_struct = KMeans(n_clusters=4, random_state=42, n_init=10)
     struct_labels = kmeans_struct.fit_predict(attr_scaled)
 
-    # 每个结构簇的属性profile + 自动命名
     struct_profiles_list = []
     for c in range(4):
         mask = struct_labels == c
@@ -420,7 +379,6 @@ def main():
         profile["size"] = int(mask.sum())
         struct_profiles_list.append(profile)
 
-    # 基于排名的自适应命名
     type_names = name_structure_types(struct_profiles_list)
 
     struct_profiles = {}
@@ -433,7 +391,6 @@ def main():
         p = struct_profiles_list[c]
         print(f"  C{c} → {stype:12s} (n={p['size']}, struct={p['structure']:.1f}, bright={p['brightness']:.1f}, entropy={p['entropy']:.1f})")
 
-    # 生成 structure_labels.json
     structure_labels = {}
     for i, name in enumerate(all_names):
         structure_labels[name] = struct_names[struct_labels[i]]
@@ -461,20 +418,18 @@ def main():
         json.dump(labels_data, f, indent=2, ensure_ascii=False)
     print(f"\n结构标签: {labels_path}")
 
-    # 可视化: 每个结构类型的代表图网格
+    # 结构类型可视化
     print("生成结构类型可视化...")
     n_types = len(struct_profiles)
     fig, axes = plt.subplots(n_types, 9, figsize=(18, n_types * 2.2))
     if n_types == 1:
         axes = axes.reshape(1, -1)
 
-    # 加载图片缓存
     img_cache = {}
     for img_path in image_files:
         img_cache[img_path.name] = np.array(Image.open(img_path).convert("RGBA"))
 
     for row, (stype, profile) in enumerate(struct_profiles.items()):
-        # 找到该类型的所有样本, 按到簇中心距离排序
         type_indices = [i for i, n in enumerate(all_names) if structure_labels[n] == stype]
         type_attrs = attr_scaled[type_indices]
         center = type_attrs.mean(axis=0)
@@ -493,26 +448,22 @@ def main():
                 if col == 0:
                     ax.set_title(f"n={profile['size']}", fontsize=9)
             else:
-                # 最后一列显示属性统计
                 info = f"struct:{profile['structure']:.1f}\nentropy:{profile['entropy']:.1f}\nbright:{profile['brightness']:.1f}\nperiod:{profile['periodicity']:.1f}"
                 ax.text(0.5, 0.5, info, transform=ax.transAxes, fontsize=9,
                         ha='center', va='center', family='monospace',
                         bbox=dict(boxstyle='round', facecolor='#333', alpha=0.8))
                 ax.set_facecolor('#1a1a1a')
 
-    plt.suptitle("Structure Types — PixelTileGAN v7", fontsize=14)
+    plt.suptitle("Structure Types — PixelTileGAN v9 (64x64)", fontsize=14)
     plt.tight_layout()
-    overview_path = OUTPUT_DIR / "structure_overview.png"
-    plt.savefig(overview_path, dpi=150, bbox_inches='tight')
+    plt.savefig(OUTPUT_DIR / "structure_overview.png", dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"结构类型图: {overview_path}")
+    print(f"结构类型图: {OUTPUT_DIR / 'structure_overview.png'}")
 
-    # 2D 散点图: 结构得分 vs 颜色得分
+    # 结构×颜色 散点图
     print("生成 结构×颜色 2D 散点图...")
     struct_score = attr_matrix[:, attr_keys.index("structure")] + attr_matrix[:, attr_keys.index("periodicity")]
-    hue_idx = attr_keys.index("hue_dominant")
-    sat_idx = attr_keys.index("saturation_mean")
-    color_score = attr_matrix[:, hue_idx]  # 用色相作为颜色轴
+    color_score = attr_matrix[:, hue_idx]
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 8))
     for stype, profile in struct_profiles.items():
@@ -521,14 +472,13 @@ def main():
                    label=f"{stype} (n={profile['size']})", s=20, alpha=0.6)
     ax.set_xlabel("Structure Score (structure + periodicity)")
     ax.set_ylabel("Hue Dominant (color)")
-    ax.set_title("Structure × Color Decomposition — PixelTileGAN v7")
+    ax.set_title("Structure × Color — PixelTileGAN v9 (64x64)")
     ax.legend()
-    scatter_path = OUTPUT_DIR / "structure_color_scatter.png"
-    plt.savefig(scatter_path, dpi=150, bbox_inches='tight')
+    plt.savefig(OUTPUT_DIR / "structure_color_scatter.png", dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"散点图: {scatter_path}")
+    print(f"散点图: {OUTPUT_DIR / 'structure_color_scatter.png'}")
 
-    # 对比属性聚类 vs 原始标签的纯度
+    # 聚类纯度
     print("\n" + "=" * 60)
     print("聚类纯度分析")
     print("=" * 60)

@@ -83,6 +83,8 @@ canvas.cut-mode { cursor:crosshair !important; }
         <h3>Preview</h3>
         <img id="preview-img" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" alt="Preview">
         <div class="info" id="preview-info">执行图生成纹理</div>
+        <button id="save-btn" onclick="exportImage()" style="width:100%;margin-top:8px;padding:6px;background:#3a3a3a;color:#4CAF50;border:1px solid #4CAF50;border-radius:4px;cursor:pointer;font-size:12px">Save Image</button>
+        <div class="info" id="export-info" style="margin-top:6px;color:#4CAF50"></div>
     </div>
 </div>
 
@@ -127,6 +129,7 @@ window.addEventListener('resize', resize);
 // ============================================================
 const NODE_COLORS = {
     generator: '#2d5a2d',
+    structure: '#3a5a3a',
     process: '#2d4a5a',
     output: '#5a2d2d',
 };
@@ -570,6 +573,13 @@ function showPropPanel(node) {
             const parseFn = pv.integer ? 'parseInt' : 'parseFloat';
             const step = pv.integer ? 1 : 'any';
             html += `<label>${pv.label || pk}</label><input type="number" value="${val}" min="${pv.min ?? ''}" max="${pv.max ?? ''}" step="${step}" style="width:100%;margin-bottom:8px;background:#333;color:#ddd;border:1px solid #555;padding:3px" onchange="setParam('${node.id}','${pk}',${parseFn}(this.value))">`;
+        } else if (pv.type === 'text') {
+            const isColor = pk.toLowerCase().includes('color');
+            if (isColor) {
+                html += `<label>${pv.label || pk}</label><div style="display:flex;gap:6px;margin-bottom:8px"><input type="color" value="${val}" style="width:36px;height:28px;border:none;cursor:pointer;background:none" oninput="setParam('${node.id}','${pk}',this.value)"><input type="text" value="${val}" style="flex:1;background:#333;color:#ddd;border:1px solid #555;padding:3px;font-family:monospace" onchange="setParam('${node.id}','${pk}',this.value)"></div>`;
+            } else {
+                html += `<label>${pv.label || pk}</label><input type="text" value="${val}" style="width:100%;margin-bottom:8px;background:#333;color:#ddd;border:1px solid #555;padding:3px" onchange="setParam('${node.id}','${pk}',this.value)">`;
+            }
         }
     }
 
@@ -809,6 +819,31 @@ function exportGraph() {
     a.href = URL.createObjectURL(blob);
     a.download = 'shader_graph.json';
     a.click();
+}
+
+function exportImage() {
+    const img = document.getElementById('preview-img');
+    const src = img.src;
+    if (!src || src.includes('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ')) {
+        document.getElementById('export-info').textContent = 'No image to save';
+        return;
+    }
+    const b64 = src.replace('data:image/png;base64,', '');
+    document.getElementById('export-info').textContent = 'Saving...';
+    fetch('/api/export', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({image: b64}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success) {
+            document.getElementById('export-info').textContent = 'Saved: ' + data.filename;
+        } else {
+            document.getElementById('export-info').textContent = 'Error: ' + data.error;
+        }
+    })
+    .catch(err => { document.getElementById('export-info').textContent = 'Error: ' + err; });
 }
 
 // 初始渲染

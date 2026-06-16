@@ -19,14 +19,14 @@ from flask import Flask, render_template, request, jsonify
 project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from models.vq_vae_v2 import VQVAEv2
+from models.vq_vae_v4 import VQVAEv4
 from scripts.tools.shader_graph.nodes import get_all_node_schemas, get_palette_options, get_tile_categories
 from scripts.tools.shader_graph.executor import GraphExecutor
 from scripts.tools.shader_graph.presets import list_presets, get_preset
 
 CONFIG = {
-    "vqvae_checkpoint": "checkpoints/vqvae_v7/vqvae_v7_best.pth",
-    "latent_data": "datasets/vqvae_latent_data_v7",
+    "vqvae_checkpoint": "checkpoints/vqvae_v9/vqvae_v9_best.pth",
+    "zq_data": "datasets/vqvae_v9_zq_data",
     "port": 5005,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
 }
@@ -43,29 +43,30 @@ def load_models():
     device = CONFIG["device"]
 
     ckpt_path = project_root / CONFIG["vqvae_checkpoint"]
-    print(f"加载 VQ-VAE: {ckpt_path}")
-    ckpt = torch.load(ckpt_path, map_location=device)
+    print(f"加载 VQ-VAE v9: {ckpt_path}")
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     config = ckpt.get("config", {})
     latent_size = config.get("latent_size", 16)
 
-    model = VQVAEv2(
+    model = VQVAEv4(
         in_channels=config.get("in_channels", 4),
         hidden_channels=config.get("hidden_channels", 256),
-        embedding_dim=config.get("embedding_dim", 64),
-        num_embeddings=config.get("num_embeddings", 256),
+        embedding_dim=config.get("embedding_dim", 128),
+        num_embeddings=config.get("num_embeddings", 1024),
         latent_size=latent_size,
     ).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
-    latent_dir = project_root / CONFIG["latent_data"]
-    latents = np.load(latent_dir / "latents.npy")
-    names = json.load(open(latent_dir / "names.json"))
+    # 加载 z_q (连续向量)
+    zq_dir = project_root / CONFIG["zq_data"]
+    zq_vectors = np.load(zq_dir / "z_q.npy")
+    names = json.load(open(zq_dir / "names.json"))
 
-    # 加载聚类信息
+    # 用 z_q 做聚类
     from sklearn.cluster import KMeans
     from sklearn.decomposition import PCA
-    flat = latents.reshape(latents.shape[0], -1)
+    flat = zq_vectors.reshape(zq_vectors.shape[0], -1)
     pca = PCA(n_components=50)
     flat_pca = pca.fit_transform(flat)
     kmeans = KMeans(n_clusters=8, random_state=42, n_init=10)
@@ -75,16 +76,16 @@ def load_models():
     cluster_reps = {}
     for c in range(8):
         mask = labels == c
-        cluster_centers[c] = latents[mask].mean(axis=0)
+        cluster_centers[c] = zq_vectors[mask].mean(axis=0)
         indices = np.where(mask)[0]
         center = cluster_centers[c].flatten()
-        dists = np.linalg.norm(latents[indices].reshape(len(indices), -1) - center, axis=1)
+        dists = np.linalg.norm(zq_vectors[indices].reshape(len(indices), -1) - center, axis=1)
         sorted_idx = indices[np.argsort(dists)]
         cluster_reps[c] = sorted_idx[:5].tolist()
 
-    # 加载图片缓存 (用于 BaseTileNode)
+    # 缓存 64x64 图片
     print("缓存图片...")
-    data_dir = project_root / "datasets" / "classified" / "pixel_32_quantized"
+    data_dir = project_root / "datasets" / "classified" / "pixel_64_quantized"
     images_cache = {}
     for name in names:
         path = data_dir / name
@@ -94,7 +95,7 @@ def load_models():
     model_context = {
         "_model": model,
         "_device": device,
-        "_latents": latents,
+        "_latents": zq_vectors,
         "_names": names,
         "_cluster_reps": cluster_reps,
         "_images_cache": images_cache,
@@ -212,6 +213,27 @@ def api_preview():
             if img is not None:
                 return jsonify({"success": True, "image": img_to_base64(img)})
         return jsonify({"success": False, "error": "no output"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+
+
+@app.route('/api/export', methods=['POST'])
+def api_export():
+    data = request.json
+    img_b64 = data.get("image")
+    if not img_b64:
+        return jsonify({"success": False, "error": "no image"})
+    try:
+        img_bytes = base64.b64decode(img_b64)
+        img = Image.open(BytesIO(img_bytes))
+        export_dir = project_root / "generated_textures"
+        export_dir.mkdir(exist_ok=True)
+        import time
+        ts = int(time.time() * 1000) % 1000000
+        filename = f"texture_{ts}.png"
+        path = export_dir / filename
+        img.save(path, "PNG")
+        return jsonify({"success": True, "path": str(path), "filename": filename})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)})
 

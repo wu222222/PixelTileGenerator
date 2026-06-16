@@ -15,9 +15,9 @@ from PIL import Image
 
 # 配置
 CONFIG = {
-    "project_root": Path(__file__).parent.parent,
-    "input_dir": "datasets/classified/pixel_32",
-    "output_dir": "datasets/classified/pixel_32_quantized",
+    "project_root": Path(__file__).parent.parent.parent,
+    "input_dir": "datasets/classified/pixel_64",
+    "output_dir": "datasets/classified/pixel_64_quantized",
     "target_colors": 32,
 }
 
